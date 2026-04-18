@@ -27,18 +27,23 @@ BoxLang 1.12+ and [`bx-ai`](https://ai.ortusbooks.com/) are required.
 ## Quick start
 
 ```javascript
-import bxModules.bxaisentinel.models.AiSentinelMiddleware;
+var sentinel = new bxAiSentinel.models.AiSentinelMiddleware();
 
-var sentinel = new AiSentinelMiddleware();
+var memory = aiMemory(
+    memory         : "window",
+    conversationId : "my-chat",
+    config         : { "maxMessages": 10 }
+);
 
 var agent = aiAgent(
     name         : "assistant",
     instructions : "You are a helpful assistant.",
-    memory       : aiMemory( "window", { maxMessages: 10 } )
-).withMiddleware( sentinel );
+    memory       : memory,
+    middleware   : sentinel
+);
 
 var reply = agent.run(
-    "My AWS key is AKIAIOSFODNN7EXAMPLE — what is the cli command to rotate it?"
+    "My AWS key is AKIAIOSFODNN7EXAMPLE. What is the cli command to rotate it?"
 );
 // The LLM saw only: "…AWS key is ⟦SECRET:AWS_ACCESS_KEY:a1b2c3d4⟧…"
 // The returned `reply` has the plaintext restored.
@@ -46,6 +51,8 @@ var reply = agent.run(
 var metrics = sentinel.getLastRunMetrics();
 // → { outboundMs, inboundMs, toolRedactMs, toolRestoreMs, tokensMinted, categories, llmRoundtripMs }
 ```
+
+Provider / apiKey / default model live in [`boxlang.json`](https://boxlang.io) under `modules.bxai.settings`; a single config change swaps the backend, no code edit.
 
 ## How it works
 
@@ -67,22 +74,22 @@ var metrics = sentinel.getLastRunMetrics();
              • replace in place
                                │
                                ▼
-          (LLM sees tokenized text only — e.g. "⟦SECRET:AWS_ACCESS_KEY:a1b2c3d4⟧")
+          (LLM sees tokenized text only, e.g. "⟦SECRET:AWS_ACCESS_KEY:a1b2c3d4⟧")
                                │
                                ▼
           afterLLMCall (AiSentinelMiddleware)
              • parse response for token shapes
              • verify HMAC, look up manifest
-             • restore plaintext — or pass through unchanged + warn
+             • restore plaintext, or pass through unchanged + warn
                                │
                                ▼
-          beforeToolCall  — repeat redaction on context.toolArgs
-          afterToolCall   — repeat restoration on context.result
+          beforeToolCall :  repeat redaction on context.toolArgs
+          afterToolCall  :  repeat restoration on context.result
                                │
                                ▼
           afterAgentRun (AiSentinelMiddleware)
              • zero manifest (char[] overwrite)
-             • emit audit log (counts + timings — never plaintext)
+             • emit audit log (counts + timings, never plaintext)
                                │
                                ▼
           Plaintext response → caller
@@ -115,8 +122,6 @@ sequenceDiagram
     Agent-->>Caller: "run: aws iam delete-access-key --access-key-id AKIA…"
 ```
 
-See [`DOCUMENTATION/02-architecture.md`](../DOCUMENTATION/02-architecture.md) for hook-by-hook sequence, [`DOCUMENTATION/04-token-format.md`](../DOCUMENTATION/04-token-format.md) for the token wire format.
-
 ## Provider examples
 
 The middleware is provider-agnostic. All `bx-ai`-supported providers work the same way.
@@ -130,7 +135,10 @@ var model = aiModel(
     apiKey   : getSystemSetting( "OPENROUTER_API_KEY" )
 );
 
-var agent = aiAgent( model: model ).withMiddleware( new AiSentinelMiddleware() );
+var agent = aiAgent(
+    model      : model,
+    middleware : new bxAiSentinel.models.AiSentinelMiddleware()
+);
 ```
 
 ### OpenAI
@@ -142,7 +150,10 @@ var model = aiModel(
     apiKey   : getSystemSetting( "OPENAI_API_KEY" )
 );
 
-var agent = aiAgent( model: model ).withMiddleware( new AiSentinelMiddleware() );
+var agent = aiAgent(
+    model      : model,
+    middleware : new bxAiSentinel.models.AiSentinelMiddleware()
+);
 ```
 
 ### Anthropic
@@ -154,7 +165,10 @@ var model = aiModel(
     apiKey   : getSystemSetting( "ANTHROPIC_API_KEY" )
 );
 
-var agent = aiAgent( model: model ).withMiddleware( new AiSentinelMiddleware() );
+var agent = aiAgent(
+    model      : model,
+    middleware : new bxAiSentinel.models.AiSentinelMiddleware()
+);
 ```
 
 ### Ollama (local)
@@ -166,14 +180,17 @@ var model = aiModel(
     baseUrl  : "http://localhost:11434"
 );
 
-var agent = aiAgent( model: model ).withMiddleware( new AiSentinelMiddleware() );
+var agent = aiAgent(
+    model      : model,
+    middleware : new bxAiSentinel.models.AiSentinelMiddleware()
+);
 ```
 
 ## Configuration
 
 Four layers, highest wins:
 
-1. Constructor overrides — `new AiSentinelMiddleware( settings: { … } )`
+1. Constructor overrides: `new AiSentinelMiddleware( settings: { … } )`
 2. Project-root `.sentinel.json`
 3. `boxlang.json` → `bxSentinel` (or `modules.bx-aisentinel`)
 4. Module defaults
@@ -191,8 +208,8 @@ Four layers, highest wins:
 | `enableRegexDetector` | `true` | Toggle catalog-driven regex detection. |
 | `enableEntropyDetector` | `true` | Toggle entropy fallback. |
 | `categoriesEnabled` | see below | Which pattern categories to apply. |
-| `registeredSecrets` | `[]` | Array of `{ label, value, category }` — appended across config layers. |
-| `customPatterns` | `[]` | Array of `{ label, regex, category, confidence, validator }` — appended across layers. |
+| `registeredSecrets` | `[]` | Array of `{ label, value, category }` (appended across config layers). |
+| `customPatterns` | `[]` | Array of `{ label, regex, category, confidence, validator }` (appended across layers). |
 | `enabled` | `true` | Runtime master switch. When `false`, every hook short-circuits. |
 
 Default `categoriesEnabled`: `cloud-keys`, `vendor-tokens`, `generic`, `pii`, `boxlang`, `entropy`, `registry`.
@@ -204,7 +221,7 @@ var sentinel = new AiSentinelMiddleware( settings: { /* ... */ } );
 
 // Runtime mutation
 sentinel.registerSecret( label: "DB_PASSWORD", value: "sekret-prod-1" );
-sentinel.setEnabled( false );    // instant disable — every hook no-ops
+sentinel.setEnabled( false );    // instant disable, every hook no-ops
 sentinel.setEnabled( true );
 
 // Inspection
@@ -229,44 +246,57 @@ Be honest about scope. bx-AISentinel **reduces** risk; it does not eliminate it.
 - **False negatives.** Any secret format not in the catalog, below the entropy threshold, and not explicitly registered is transmitted plaintext. **The catalog is a floor, not a ceiling.**
 - **Out-of-band channels.** Values transmitted via other paths (direct HTTP, unrelated SDKs, CLI tools) never flow through Sentinel.
 - **Response-generated plaintext.** If the LLM guesses a secret correctly from context, Sentinel cannot redact something it never saw.
-- **JVM memory residue.** Plaintext is held as `char[]` and explicitly zeroed in `afterAgentRun`, but the JVM may retain copies in internal buffers (string pool, IO buffers), GC may move/copy without our knowledge, and heap pages may swap to disk. **This is best-effort, not a guarantee.** See [`DOCUMENTATION/05-threat-model.md`](../DOCUMENTATION/05-threat-model.md) for the full treatment and operational hardening recommendations.
+- **JVM memory residue.** Plaintext is held as `char[]` and explicitly zeroed in `afterAgentRun`, but the JVM may retain copies in internal buffers (string pool, IO buffers), GC may move/copy without our knowledge, and heap pages may swap to disk. **This is best-effort, not a guarantee.**
 
-Prefer framing like "reduces the risk of," "helps prevent," "mitigates exposure to." Avoid "secrets never leave your machine," "100% secure," "guaranteed PII protection."
+bx-AISentinel avoids absolute security claims. Prefer language like "reduces the risk of," "helps prevent," or "mitigates exposure to." Avoid absolutes like "secrets never leave your machine," "100% secure," or "guaranteed PII protection."
 
 ## Performance
 
-Tier 0 (regex + entropy + registry) target: **sub-10 ms on prompts up to 8 KB on a developer laptop**. Measured as `outboundMs + inboundMs` per `agent.run()`. See [`DOCUMENTATION/06-metrics.md`](../DOCUMENTATION/06-metrics.md) for measurement boundaries and test coverage.
+Tier 0 (regex + entropy + registry) target: **sub-10 ms on prompts up to 8 KB on a developer laptop**. Measured as `outboundMs + inboundMs` per `agent.run()`.
 
 Runtime performance is dominated by regex scanning. If you disable `enableEntropyDetector` you cut the per-turn cost by roughly half on small prompts; leave it on for safety against unknown token formats.
 
 ## Development
 
 ```sh
-# Clone this repo, then from the module root:
-cd bx-AISentinelMiddleware/
+git clone https://github.com/mrigsby/bx-AISentinel.git
+cd bx-AISentinel/tests
 
-# Unit + integration tests
-boxlang run tests/runner.bxm
+# Install TestBox into the isolated test harness
+box install
 
-# Lint / type check
-# (none yet — TestBox is the primary signal)
+# Start the harness server (port 8082). On first run this also installs
+# bx-ai, bx-compat-cfml, bx-esapi, and bx-markdown into a local
+# BoxLang engine under tests/.engine/
+box server start
+
+# Runner URL: http://localhost:8082/runner.bxm
+# or run headlessly:
+box testbox run
 ```
 
-The demo application in [`../DEMO-APPLICATION/`](../DEMO-APPLICATION/) is the end-to-end acceptance test: ColdBox + CBWire against a real OpenRouter call.
+Coverage: 12 TestBox spec files covering detectors, tokenizer, manifest, detection engine, policy, auditor, pattern catalog, and three integration specs that drive the full hook sequence.
 
-## Documentation
+## Demo application
 
-- [`DOCUMENTATION/00-plan-and-progress.md`](../DOCUMENTATION/00-plan-and-progress.md) — canonical plan + live progress
-- [`DOCUMENTATION/02-architecture.md`](../DOCUMENTATION/02-architecture.md) — hook-by-hook sequence
-- [`DOCUMENTATION/03-detection-catalog.md`](../DOCUMENTATION/03-detection-catalog.md) — full pattern list
-- [`DOCUMENTATION/04-token-format.md`](../DOCUMENTATION/04-token-format.md) — wire format + HMAC design
-- [`DOCUMENTATION/05-threat-model.md`](../DOCUMENTATION/05-threat-model.md) — what it defends against, what it doesn't
-- [`DOCUMENTATION/06-metrics.md`](../DOCUMENTATION/06-metrics.md) — timing boundaries + audit log schema
-- [`DOCUMENTATION/07-future-work.md`](../DOCUMENTATION/07-future-work.md) — Tier 1 NER, local-LLM arbitration, OS keychain, streaming
+The companion [**bx-AISentinel-demo**](https://github.com/mrigsby/bx-AISentinel-demo) repository is the end-to-end acceptance test for this module. It's a ColdBox 8 + CBWire chat app on BoxLang MiniServer that drives a real OpenRouter call through bx-AISentinel and surfaces the middleware's behavior in the UI.
+
+### Features
+
+- **Reactive chat**: CBWire-powered chat page hitting a real `aiAgent()` against OpenRouter (one API key in `.env`; the default `openrouter/elephant-alpha` model is free).
+- **Sentinel master toggle**: flip the middleware off mid-session and send the same prompt to compare raw vs tokenized payloads.
+- **Token-coaching toggle**: switch "Explain tokens to LLM" to inject (or suppress) the protocol system message that teaches the model to keep `⟦SECRET:…⟧` placeholders byte-exact.
+- **Seeded sample prompts**: one-click buttons that paste fake-but-realistic fixtures (AWS keys, GitHub tokens, SendGrid tokens, SSNs, customer emails, Postgres URIs, full `.env` blocks) so you can see detection fire immediately.
+- **Raw request / response inspector**: side-by-side view of what the LLM actually saw vs what the caller sees after restoration.
+- **Per-reply timing badge**: outbound, inbound, tool redact, tool restore, and LLM round-trip, color-coded green / amber / red for quick overhead visibility.
+- **Session-scoped dashboard** at `/dashboard`: running totals for tokens minted, category breakdown, overhead ratio, and a recent-runs ring.
+- **Developer affordances**: sidebar link that opens the TestBox runner for the demo's own spec suite, plus a GitHub link to this module's repo.
+
+Setup + usage instructions live in the [demo repo README](https://github.com/mrigsby/bx-AISentinel-demo#readme).
 
 ## License
 
-Apache 2.0 — see [`LICENSE`](LICENSE).
+Apache 2.0 (see [`LICENSE`](LICENSE)).
 
 Regex patterns in [`includes/patterns/`](includes/patterns/) are derived from:
 

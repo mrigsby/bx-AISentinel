@@ -15,6 +15,9 @@ server-*.log
 tests/.tmp-*/
 **/.tmp-*/
 
+# Internal planning docs — kept local, never published.
+tests/TESTING-TODOS.md
+
 # Build output (reserved for future compile step)
 dist/
 build/

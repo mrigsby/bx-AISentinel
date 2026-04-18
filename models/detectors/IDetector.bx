@@ -1,0 +1,67 @@
+/**
+ * IDetector — abstract base for every detection implementation.
+ *
+ * Concrete detectors extend this class and override `scan()`. They return
+ * an array of Hit structs. DetectionEngine composes multiple detectors and
+ * resolves overlaps using each hit's `priority` (lower = stronger claim).
+ *
+ * Hit shape:
+ *   {
+ *       start      : 1-based inclusive start offset in the scanned text
+ *       end        : 1-based inclusive end offset
+ *       value      : the matched plaintext substring
+ *       label      : UPPER_SNAKE category tag (e.g. AWS_ACCESS_KEY)
+ *       category   : grouping string (e.g. "cloud-keys", "pii")
+ *       priority   : 1 = registry, 2 = regex, 3 = entropy (lower wins)
+ *       confidence : 0.0 – 1.0
+ *       source     : detector name, for audit / debug
+ *   }
+ */
+class {
+
+    property name="priority" type="numeric" default="3";
+    property name="sourceName" type="string" default="IDetector";
+
+    function init() {
+        return this;
+    }
+
+    /**
+     * Scan text and return an array of Hit structs. Override in subclasses.
+     */
+    array function scan( required string text ) {
+        return [];
+    }
+
+    numeric function getPriority() {
+        return variables.priority;
+    }
+
+    string function getSourceName() {
+        return variables.sourceName;
+    }
+
+    /**
+     * Shared helper: build a Hit struct with consistent defaults.
+     */
+    struct function makeHit(
+        required numeric start,
+        required numeric end,
+        required string value,
+        required string label,
+        required string category,
+                 numeric confidence = 1.0
+    ) {
+        return {
+            "start"      : arguments.start,
+            "end"        : arguments.end,
+            "value"      : arguments.value,
+            "label"      : arguments.label,
+            "category"   : arguments.category,
+            "priority"   : variables.priority,
+            "confidence" : arguments.confidence,
+            "source"     : variables.sourceName
+        };
+    }
+
+}

@@ -1,0 +1,105 @@
+/**
+ * TokenManifest — in-memory Map<String, char[]> of minted tokens → plaintext.
+ *
+ * Default scope: one instance per agent run. The owning middleware creates a
+ * fresh manifest in beforeAgentRun and calls zeroAll() in afterAgentRun.
+ *
+ * Plaintext is stored as a java.lang.char[] (NOT a String) so it can be
+ * explicitly overwritten with zeros on release. See DOCUMENTATION/05-threat-model.md
+ * for the best-effort caveats — the JVM may retain copies in internal buffers
+ * that we cannot directly zero.
+ */
+class {
+
+    property name="entries" type="struct";
+
+    function init() {
+        variables.entries = {};
+        return this;
+    }
+
+    /**
+     * Store a (token, plaintext) pair. Plaintext is converted to char[] so
+     * the backing storage can be zeroed. If the token already exists, the
+     * previous char[] is zeroed before being replaced.
+     */
+    function store(
+        required string token,
+        required string value
+    ) {
+        if ( hasToken( arguments.token ) ) {
+            _zeroArray( variables.entries[ arguments.token ] );
+        }
+        variables.entries[ arguments.token ] = arguments.value.toCharArray();
+        return this;
+    }
+
+    /**
+     * Retrieve the plaintext for a token, or empty string if unknown.
+     * Converting char[] back to a String necessarily briefly re-creates
+     * the plaintext in the JVM string pool — this is unavoidable when
+     * performing the actual substitution in the response text.
+     */
+    string function get( required string token ) {
+        if ( !hasToken( arguments.token ) ) {
+            return "";
+        }
+        return createObject( "java", "java.lang.String" ).init( variables.entries[ arguments.token ] );
+    }
+
+    boolean function hasToken( required string token ) {
+        return structKeyExists( variables.entries, arguments.token );
+    }
+
+    numeric function size() {
+        return structCount( variables.entries );
+    }
+
+    /**
+     * Remove one entry. Zeroes the backing char[] before removal.
+     */
+    function remove( required string token ) {
+        if ( hasToken( arguments.token ) ) {
+            _zeroArray( variables.entries[ arguments.token ] );
+            structDelete( variables.entries, arguments.token );
+        }
+        return this;
+    }
+
+    /**
+     * Zero every backing char[] and clear the map. Call this at the end of
+     * the agent run.
+     */
+    function zeroAll() {
+        for ( var token in variables.entries ) {
+            _zeroArray( variables.entries[ token ] );
+        }
+        variables.entries = {};
+        return this;
+    }
+
+    /**
+     * All known token strings. Used by the middleware on inbound scans to
+     * short-circuit parsing when the manifest is empty.
+     */
+    array function tokens() {
+        return structKeyArray( variables.entries );
+    }
+
+    /**
+     * Internal: exposed only for unit tests that need to assert the char[]
+     * has actually been zeroed. Prefix underscore signals "do not use".
+     */
+    any function _getRawArray( required string token ) {
+        if ( !hasToken( arguments.token ) ) {
+            return javaCast( "null", "" );
+        }
+        return variables.entries[ arguments.token ];
+    }
+
+    private function _zeroArray( required any charArray ) {
+        createObject( "java", "java.util.Arrays" )
+            .fill( arguments.charArray, javaCast( "char", 0 ) );
+    }
+
+}

@@ -1,0 +1,137 @@
+/**
+ * PolicyIntegrationSpec — verifies policy knobs actually shape middleware behavior.
+ */
+class extends="testbox.system.BaseSpec" {
+
+    function run() {
+
+        describe( "AiSentinelMiddleware driven by SentinelPolicy", function() {
+
+            it( "skips disabled categories (entropy off → no HIGH_ENTROPY_TOKEN hits)", function() {
+                var mw = new bxAiSentinel.models.AiSentinelMiddleware( settings: {
+                    "categoriesEnabled" : [ "cloud-keys", "pii", "registry" ],
+                    "enableEntropyDetector" : false
+                } );
+
+                var ctx = {
+                    "metadata" : {},
+                    "messages" : [ { "role": "user", "content": "high-entropy blob: aZ3!bX7##kL4_pR9vN2@qT5&mW8%" } ]
+                };
+
+                mw.beforeAgentRun( ctx );
+                mw.beforeLLMCall( ctx );
+
+                expect( ctx.metadata.sentinel.metrics.tokensMinted ).toBe( 0 );
+            } );
+
+            it( "keeps detection for enabled categories", function() {
+                var mw = new bxAiSentinel.models.AiSentinelMiddleware( settings: {
+                    "categoriesEnabled" : [ "vendor-tokens" ]
+                } );
+
+                var ctx = {
+                    "metadata" : {},
+                    "messages" : [ { "role": "user", "content": "token: ghp_" & repeatString( "a", 36 ) } ]
+                };
+
+                mw.beforeAgentRun( ctx );
+                mw.beforeLLMCall( ctx );
+
+                expect( ctx.metadata.sentinel.metrics.tokensMinted ).toBe( 1 );
+                expect( ctx.metadata.sentinel.metrics.categories ).toHaveKey( "vendor-tokens" );
+            } );
+
+            it( "respects enableRegexDetector=false (only registry + entropy active)", function() {
+                var mw = new bxAiSentinel.models.AiSentinelMiddleware( settings: {
+                    "enableRegexDetector" : false,
+                    "registeredSecrets"   : [ { "label": "API_KEY", "value": "my-api-key-123" } ]
+                } );
+
+                var ctx = {
+                    "metadata" : {},
+                    "messages" : [ { "role": "user", "content": "regex-would-catch-this: AKIAIOSFODNN7EXAMPLE registry-catches-this: my-api-key-123" } ]
+                };
+
+                mw.beforeAgentRun( ctx );
+                mw.beforeLLMCall( ctx );
+
+                var text = _joinUserContent( ctx.messages );
+                expect( text ).toInclude( "AKIAIOSFODNN7EXAMPLE" );       // regex disabled → passes through
+                expect( text ).notToInclude( "my-api-key-123" );          // registry still active
+            } );
+
+            it( "applies customPatterns from the policy", function() {
+                var mw = new bxAiSentinel.models.AiSentinelMiddleware( settings: {
+                    "customPatterns" : [
+                        {
+                            "label"      : "INTERNAL_CUSTOMER_ID",
+                            "category"   : "custom",
+                            "regex"      : "CUST-[A-Z0-9]{10}",
+                            "confidence" : 0.95
+                        }
+                    ],
+                    "categoriesEnabled" : [ "custom" ]
+                } );
+
+                var ctx = {
+                    "metadata" : {},
+                    "messages" : [ { "role": "user", "content": "look up CUST-A1B2C3D4E5 please" } ]
+                };
+
+                mw.beforeAgentRun( ctx );
+                mw.beforeLLMCall( ctx );
+
+                var userPayload = _joinUserContent( ctx.messages );
+                expect( userPayload ).notToInclude( "CUST-A1B2C3D4E5" );
+                expect( userPayload ).toInclude( "SECRET:INTERNAL_CUSTOMER_ID:" );
+            } );
+
+            it( "honors manifestScope = conversation (same sessionKey across runs)", function() {
+                var mw = new bxAiSentinel.models.AiSentinelMiddleware( settings: {
+                    "manifestScope" : "conversation"
+                } );
+
+                var run1 = { "metadata": {}, "messages": [ { "role": "user", "content": "key AKIAIOSFODNN7EXAMPLE" } ] };
+                mw.beforeAgentRun( run1 );
+                mw.beforeLLMCall( run1 );
+                run1.response = "";
+                mw.afterLLMCall( run1 );
+                mw.afterAgentRun( run1 );
+                var key1 = run1.metadata.sentinel.sessionKey;
+
+                var run2 = { "metadata": {}, "messages": [ { "role": "user", "content": "hello" } ] };
+                mw.beforeAgentRun( run2 );
+                var key2 = run2.metadata.sentinel.sessionKey;
+
+                expect( key1 ).toBe( key2 );
+            } );
+
+            it( "exposes the resolved policy via getPolicy()", function() {
+                var mw = new bxAiSentinel.models.AiSentinelMiddleware( settings: {
+                    "entropyThreshold" : 5.5
+                } );
+
+                expect( mw.getPolicy().getEntropyThreshold() ).toBe( 5.5 );
+                expect( mw.getPolicy().getSourceReport().overridesApplied ).toBeTrue();
+            } );
+
+        } );
+
+    }
+
+    /**
+     * Concatenate every user-role message's content into one string. Scoping
+     * assertions this way stays correct even when the middleware prepends a
+     * system message (e.g. the token protocol) and shifts array indices.
+     */
+    private string function _joinUserContent( required array messages ) {
+        var chunks = [];
+        for ( var m in arguments.messages ) {
+            if ( isStruct( m ) && ( m.role ?: "" ) == "user" && isSimpleValue( m.content ?: "" ) ) {
+                chunks.append( m.content );
+            }
+        }
+        return arrayToList( chunks, char( 10 ) );
+    }
+
+}

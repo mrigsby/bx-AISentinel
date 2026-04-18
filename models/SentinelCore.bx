@@ -1,0 +1,235 @@
+/**
+ * SentinelCore — the actual redaction / restoration engine.
+ *
+ * Pulled out of the middleware shell so it can be tested without a live
+ * bx-ai agent. The middleware (`AiSentinelMiddleware`) is a thin adapter
+ * that builds a runContext in `beforeAgentRun` and dispatches to these two
+ * methods from `beforeLLMCall` / `afterLLMCall` / `beforeToolCall` /
+ * `afterToolCall`.
+ *
+ * runContext shape:
+ *     {
+ *         sessionKey : string,          // per-run HMAC key
+ *         manifest   : TokenManifest,   // token ↔ plaintext map
+ *         metrics    : {
+ *             outboundMs     : numeric,
+ *             inboundMs      : numeric,
+ *             toolRedactMs   : numeric,
+ *             toolRestoreMs  : numeric,
+ *             tokensMinted   : numeric,
+ *             categories     : struct,
+ *             lastOutboundMs : numeric,
+ *             lastInboundMs  : numeric
+ *         },
+ *         runId      : string
+ *     }
+ */
+class {
+
+    property name="tokenizer"        type="any";
+    property name="detectionEngine"  type="any";
+    property name="auditor"          type="any";
+
+    function init(
+        required any tokenizer,
+        required any detectionEngine,
+        required any auditor
+    ) {
+        variables.tokenizer       = arguments.tokenizer;
+        variables.detectionEngine = arguments.detectionEngine;
+        variables.auditor         = arguments.auditor;
+        return this;
+    }
+
+    /**
+     * Scan `text`, mint tokens for every hit, store each in the manifest,
+     * and return the text with hits replaced. Mutates runContext.metrics.
+     */
+    string function redact(
+        required string text,
+        required struct runContext
+    ) {
+        if ( !len( arguments.text ) ) {
+            return arguments.text;
+        }
+
+        var hits = variables.detectionEngine.scan( arguments.text );
+        if ( arrayLen( hits ) == 0 ) {
+            return arguments.text;
+        }
+
+        var result = arguments.text;
+        // Walk right-to-left so earlier offsets remain valid.
+        for ( var i = arrayLen( hits ); i >= 1; i-- ) {
+            var h     = hits[ i ];
+            var token = variables.tokenizer.mint( h.label, h.value, arguments.runContext.sessionKey );
+            arguments.runContext.manifest.store( token, h.value );
+
+            arguments.runContext.metrics.categories[ h.category ] =
+                ( arguments.runContext.metrics.categories.keyExists( h.category )
+                    ? arguments.runContext.metrics.categories[ h.category ]
+                    : 0 ) + 1;
+            arguments.runContext.metrics.labels[ h.label ] =
+                ( arguments.runContext.metrics.labels.keyExists( h.label )
+                    ? arguments.runContext.metrics.labels[ h.label ]
+                    : 0 ) + 1;
+            arguments.runContext.metrics.tokensMinted++;
+
+            result = _replaceRange( result, h.start, h.end, token );
+        }
+
+        return result;
+    }
+
+    /**
+     * Scan `text` for token-shaped strings. For each one, if it's in the
+     * manifest AND the HMAC verifies against the stored plaintext, restore
+     * the plaintext. Otherwise log a warning and pass through unchanged.
+     */
+    string function restore(
+        required string text,
+        required struct runContext
+    ) {
+        if ( !len( arguments.text ) ) {
+            return arguments.text;
+        }
+
+        var candidates = variables.tokenizer.parse( arguments.text );
+        if ( arrayLen( candidates ) == 0 ) {
+            return arguments.text;
+        }
+
+        var result = arguments.text;
+        for ( var i = arrayLen( candidates ); i >= 1; i-- ) {
+            var c = candidates[ i ];
+
+            if ( arguments.runContext.manifest.hasToken( c.token ) ) {
+                var value = arguments.runContext.manifest.get( c.token );
+                if ( variables.tokenizer.verify( c.token, value, arguments.runContext.sessionKey ) ) {
+                    result = _replaceRange( result, c.start, c.end, value );
+                    continue;
+                }
+            }
+
+            variables.auditor.warnUnsignedToken( c.hmac );
+        }
+
+        return result;
+    }
+
+    /**
+     * Recursively redact every string leaf in a data structure (struct, array,
+     * or primitive). Mutates structs and arrays in place. Preserves numeric /
+     * boolean types by only replacing a value when redaction actually changed it.
+     *
+     * Used by the middleware's `beforeToolCall` hook against `context.toolArgs`.
+     */
+    any function redactStructure(
+        required any data,
+        required struct runContext
+    ) {
+        return _walkStructure( arguments.data, arguments.runContext, true );
+    }
+
+    /**
+     * Symmetric walker for `afterToolCall`: restores plaintext from tokens in
+     * every string leaf. Unsigned token-shaped strings pass through unchanged
+     * with a warning (same policy as `restore()`).
+     */
+    any function restoreStructure(
+        required any data,
+        required struct runContext
+    ) {
+        return _walkStructure( arguments.data, arguments.runContext, false );
+    }
+
+    /**
+     * Generic recursive walker. When `redactMode` is true, calls redact()
+     * on each string leaf; when false, calls restore().
+     */
+    private any function _walkStructure(
+        required any data,
+        required struct runContext,
+        required boolean redactMode
+    ) {
+        if ( isNull( arguments.data ) ) {
+            return javaCast( "null", "" );
+        }
+
+        // Structs (but not CFCs / Java objects that happen to look struct-y)
+        if ( isStruct( arguments.data ) && !isObject( arguments.data ) ) {
+            for ( var key in arguments.data ) {
+                arguments.data[ key ] = _walkStructure( arguments.data[ key ], arguments.runContext, arguments.redactMode );
+            }
+            return arguments.data;
+        }
+
+        if ( isArray( arguments.data ) ) {
+            for ( var i = 1; i <= arrayLen( arguments.data ); i++ ) {
+                arguments.data[ i ] = _walkStructure( arguments.data[ i ], arguments.runContext, arguments.redactMode );
+            }
+            return arguments.data;
+        }
+
+        if ( isSimpleValue( arguments.data ) ) {
+            var original = arguments.data;
+            var asString = toString( arguments.data );
+            var processed = arguments.redactMode
+                ? redact( asString, arguments.runContext )
+                : restore( asString, arguments.runContext );
+            // Preserve original (possibly non-string) type when nothing changed.
+            return ( processed == asString ) ? original : processed;
+        }
+
+        // Unknown shapes (Query, XML, raw Java objects) — pass through untouched.
+        return arguments.data;
+    }
+
+    /**
+     * Build a fresh per-run context. Called from `AiSentinelMiddleware.beforeAgentRun`.
+     */
+    struct function newRunContext() {
+        return {
+            "sessionKey" : variables.tokenizer.newSessionKey(),
+            "manifest"   : new TokenManifest(),
+            "runId"      : createUUID(),
+            "metrics"    : {
+                "outboundMs"     : 0,
+                "inboundMs"      : 0,
+                "toolRedactMs"   : 0,
+                "toolRestoreMs"  : 0,
+                "tokensMinted"   : 0,
+                "categories"     : {},
+                "labels"         : {},
+                "lastOutboundMs" : 0,
+                "lastInboundMs"  : 0
+            }
+        };
+    }
+
+    /**
+     * Clean up a run context — zero the manifest's char[] backing store.
+     */
+    function teardownRunContext( required struct runContext ) {
+        arguments.runContext.manifest.zeroAll();
+    }
+
+    /**
+     * Replace text[start..end] with replacement (1-based inclusive offsets).
+     */
+    private string function _replaceRange(
+        required string text,
+        required numeric start,
+        required numeric end,
+        required string replacement
+    ) {
+        var before = arguments.start > 1
+            ? mid( arguments.text, 1, arguments.start - 1 )
+            : "";
+        var after  = arguments.end < len( arguments.text )
+            ? mid( arguments.text, arguments.end + 1, len( arguments.text ) - arguments.end )
+            : "";
+        return before & arguments.replacement & after;
+    }
+
+}

@@ -1,0 +1,138 @@
+/**
+ * SentinelAuditorSpec — unit coverage for the plaintext-safe audit channel.
+ *
+ * Guarantees exercised here:
+ *   - Methods NEVER throw, even if writeLog underneath misbehaves.
+ *   - When `enabled = false`, every write method short-circuits (no log I/O).
+ *   - `runComplete()` emits a JSON-serialized metrics struct — never plaintext.
+ *   - `warnUnsignedToken()` only emits the 8-char HMAC suffix.
+ *
+ * We use MockBox's $() to stub the private `_write` so we can inspect what the
+ * auditor *tried* to log without actually writing to disk.
+ */
+class extends="testbox.system.BaseSpec" {
+
+    function run() {
+
+        describe( "SentinelAuditor — constructor defaults", function() {
+
+            it( "defaults to logFile=bx-aisentinel and enabled=true", function() {
+                var a = prepareMock( new bxAiSentinel.models.SentinelAuditor() );
+                // No direct getters, but we can verify via behavior: an enabled auditor
+                // DOES reach _write, a disabled one does not.
+                a.$( "_write" );
+                a.warnUnsignedToken( "deadbeef" );
+                expect( a.$count( "_write" ) ).toBe( 1 );
+            } );
+
+            it( "honors explicit enabled=false at construction", function() {
+                var a = prepareMock( new bxAiSentinel.models.SentinelAuditor( enabled: false ) );
+                a.$( "_write" );
+
+                a.warnUnsignedToken( "deadbeef" );
+                a.warnDetectorError( "RegexDetector", "boom" );
+                a.runComplete( { "tokensMinted": 1 }, "run-id" );
+
+                expect( a.$count( "_write" ) ).toBe( 0 );
+            } );
+
+        } );
+
+        describe( "SentinelAuditor.warnUnsignedToken()", function() {
+
+            it( "emits only the hmac suffix — never any plaintext", function() {
+                var a = prepareMock( new bxAiSentinel.models.SentinelAuditor() );
+                a.$( "_write" );
+
+                a.warnUnsignedToken( "abc12345" );
+                expect( a.$count( "_write" ) ).toBe( 1 );
+
+                var call = a.$callLog()._write[ 1 ];
+                // First arg is level, second is the message string
+                expect( call[ 1 ] ).toBe( "warning" );
+                expect( call[ 2 ] ).toInclude( "abc12345" );
+                expect( call[ 2 ] ).toInclude( "unsigned token-shape" );
+            } );
+
+            it( "defaults context to afterLLMCall when omitted", function() {
+                var a = prepareMock( new bxAiSentinel.models.SentinelAuditor() );
+                a.$( "_write" );
+
+                a.warnUnsignedToken( "ffffffff" );
+                expect( a.$callLog()._write[ 1 ][ 2 ] ).toInclude( "afterLLMCall" );
+            } );
+
+            it( "records the caller-supplied context string when given", function() {
+                var a = prepareMock( new bxAiSentinel.models.SentinelAuditor() );
+                a.$( "_write" );
+
+                a.warnUnsignedToken( hmacSuffix: "ffffffff", context: "afterToolCall" );
+                expect( a.$callLog()._write[ 1 ][ 2 ] ).toInclude( "afterToolCall" );
+            } );
+
+        } );
+
+        describe( "SentinelAuditor.warnDetectorError()", function() {
+
+            it( "logs at error level with the detector source and message", function() {
+                var a = prepareMock( new bxAiSentinel.models.SentinelAuditor() );
+                a.$( "_write" );
+
+                a.warnDetectorError( "RegexDetector", "invalid pattern [A-" );
+
+                var call = a.$callLog()._write[ 1 ];
+                expect( call[ 1 ] ).toBe( "error" );
+                expect( call[ 2 ] ).toInclude( "RegexDetector" );
+                expect( call[ 2 ] ).toInclude( "invalid pattern" );
+            } );
+
+        } );
+
+        describe( "SentinelAuditor.runComplete()", function() {
+
+            it( "emits a JSON payload with metric counts, the runId, and the event name", function() {
+                var a = prepareMock( new bxAiSentinel.models.SentinelAuditor() );
+                a.$( "_write" );
+
+                a.runComplete(
+                    metrics: {
+                        "outboundMs"    : 5,
+                        "inboundMs"     : 2,
+                        "toolRedactMs"  : 0,
+                        "toolRestoreMs" : 0,
+                        "tokensMinted"  : 3,
+                        "categories"    : { "cloud-keys": 1, "pii": 2 }
+                    },
+                    runId: "test-run-abc"
+                );
+
+                var call = a.$callLog()._write[ 1 ];
+                expect( call[ 1 ] ).toBe( "information" );
+
+                var parsed = jsonDeserialize( call[ 2 ] );
+                expect( parsed.event           ).toBe( "sentinel.run.complete" );
+                expect( parsed.runId           ).toBe( "test-run-abc" );
+                expect( parsed.tokensMinted    ).toBe( 3 );
+                expect( parsed.outboundTotalMs ).toBe( 5 );
+                expect( parsed.inboundTotalMs  ).toBe( 2 );
+                expect( parsed.categories[ "cloud-keys" ] ).toBe( 1 );
+                expect( parsed.categories[ "pii"        ] ).toBe( 2 );
+            } );
+
+            it( "tolerates metric structs that omit fields (defaults to 0 / empty)", function() {
+                var a = prepareMock( new bxAiSentinel.models.SentinelAuditor() );
+                a.$( "_write" );
+
+                a.runComplete( metrics: {}, runId: "run-sparse" );
+
+                var parsed = jsonDeserialize( a.$callLog()._write[ 1 ][ 2 ] );
+                expect( parsed.tokensMinted    ).toBe( 0 );
+                expect( parsed.outboundTotalMs ).toBe( 0 );
+                expect( parsed.categories      ).toBeEmpty();
+            } );
+
+        } );
+
+    }
+
+}

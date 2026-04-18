@@ -1,0 +1,67 @@
+/**
+ * RegistryDetectorSpec — unit tests for literal registered-value matching.
+ */
+class extends="testbox.system.BaseSpec" {
+
+    function run() {
+
+        describe( "RegistryDetector", function() {
+
+            it( "returns no hits when nothing is registered", function() {
+                var d = new bxAiSentinel.models.detectors.RegistryDetector();
+                expect( d.scan( "hello world password=sekret123" ) ).toHaveLength( 0 );
+            } );
+
+            it( "finds a registered secret as a literal substring", function() {
+                var d = new bxAiSentinel.models.detectors.RegistryDetector( secrets: [
+                    { "label": "DB_PASSWORD", "value": "sekret123", "category": "registry" }
+                ] );
+                var hits = d.scan( "my config has password=sekret123 in it" );
+
+                expect( hits ).toHaveLength( 1 );
+                expect( hits[ 1 ].label ).toBe( "DB_PASSWORD" );
+                expect( hits[ 1 ].value ).toBe( "sekret123" );
+                expect( hits[ 1 ].priority ).toBe( 1 );
+                expect( hits[ 1 ].source ).toBe( "RegistryDetector" );
+            } );
+
+            it( "finds multiple occurrences of the same secret", function() {
+                var d = new bxAiSentinel.models.detectors.RegistryDetector( secrets: [
+                    { "label": "TOKEN", "value": "abc" }
+                ] );
+                var hits = d.scan( "abc def abc ghi abc" );
+                expect( hits ).toHaveLength( 3 );
+            } );
+
+            it( "is case-sensitive (intentional: partial-case would leak)", function() {
+                var d = new bxAiSentinel.models.detectors.RegistryDetector( secrets: [
+                    { "label": "X", "value": "MySecret" }
+                ] );
+                expect( d.scan( "contains mysecret only" ) ).toHaveLength( 0 );
+                expect( d.scan( "contains MySecret only" ) ).toHaveLength( 1 );
+            } );
+
+            it( "supports runtime registration via register()", function() {
+                var d = new bxAiSentinel.models.detectors.RegistryDetector();
+                d.register( "API_KEY", "xyzzy-42" );
+                expect( d.scan( "call with xyzzy-42 please" ) ).toHaveLength( 1 );
+            } );
+
+            it( "supports unregister()", function() {
+                var d = new bxAiSentinel.models.detectors.RegistryDetector();
+                d.register( "API_KEY", "xyzzy-42" );
+                d.unregister( "xyzzy-42" );
+                expect( d.scan( "call with xyzzy-42 please" ) ).toHaveLength( 0 );
+            } );
+
+            it( "ignores empty values passed to register()", function() {
+                var d = new bxAiSentinel.models.detectors.RegistryDetector();
+                d.register( "API_KEY", "" );
+                expect( d.size() ).toBe( 0 );
+            } );
+
+        } );
+
+    }
+
+}

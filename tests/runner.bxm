@@ -1,0 +1,22 @@
+<bx:setting enableCFOutputOnly="true" requestTimeout="9999">
+
+<bx:script>
+    // Allow overriding reporter / directory / bundles via URL scope
+    param name="url.reporter"  default="simple";
+    param name="url.directory" default="tests.specs";
+    param name="url.bundles"   default="";
+    param name="url.recurse"   default="true";
+    param name="url.labels"    default="";
+</bx:script>
+
+<bx:output>
+    #new testbox.system.TestBox(
+        reporter : url.reporter,
+        bundles  : listToArray( url.bundles ),
+        directory: url.directory,
+        labels   : listToArray( url.labels ),
+        options  : { recurse : url.recurse }
+    ).run()#
+</bx:output>
+
+<bx:setting enableCFOutputOnly="false">

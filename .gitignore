@@ -1,0 +1,38 @@
+# ─── Dev dependencies ────────────────────────────────────────────────────
+# TestBox is installed locally for running specs — do not commit.
+# Unscoped so it catches tests/testbox/ (CommandBox installPaths target).
+testbox/
+
+# CommandBox server runtime — covers tests/.engine/ (isolated BoxLang engine
+# home for the module test harness) and any sibling engine dirs.
+.engine/
+**/server-home/
+**/.commandbox/
+server-*.log
+.cfconfig.json
+
+# Test-runner scratch + ephemeral fixture dirs
+tests/.tmp-*/
+**/.tmp-*/
+
+# Build output (reserved for future compile step)
+dist/
+build/
+
+# Logs
+logs/
+*.log
+
+# ─── OS / editor noise ───────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ─── NEVER ignore anywhere in the module ─────────────────────────────────
+# (kept as explicit negations in case someone adds a broader rule above)
+!box.json
+!ModuleConfig.bx
+!includes/patterns/*.json

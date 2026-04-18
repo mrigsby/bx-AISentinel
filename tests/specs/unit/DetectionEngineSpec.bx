@@ -1,0 +1,132 @@
+/**
+ * DetectionEngineSpec — composition + conflict resolution across detectors.
+ */
+class extends="testbox.system.BaseSpec" {
+
+    function beforeAll() {
+        variables.catalog = new bxAiSentinel.models.catalog.PatternCatalog().loadBundled();
+    }
+
+    function run() {
+
+        describe( "DetectionEngine — basic composition", function() {
+
+            it( "scans with a single detector and returns offset-sorted hits", function() {
+                var registry = new bxAiSentinel.models.detectors.RegistryDetector( secrets: [
+                    { "label": "DB_PW", "value": "sekret123" }
+                ] );
+                var engine = new bxAiSentinel.models.DetectionEngine( detectors: [ registry ] );
+
+                var hits = engine.scan( "alpha sekret123 beta sekret123 gamma" );
+                expect( hits ).toHaveLength( 2 );
+                expect( hits[ 1 ].start ).toBeLT( hits[ 2 ].start );
+            } );
+
+            it( "composes multiple detectors and returns a merged, sorted array", function() {
+                var registry = new bxAiSentinel.models.detectors.RegistryDetector( secrets: [
+                    { "label": "DB_PW", "value": "sekret123" }
+                ] );
+                var regex = new bxAiSentinel.models.detectors.RegexDetector( catalog: variables.catalog );
+                var engine = new bxAiSentinel.models.DetectionEngine( detectors: [ registry, regex ] );
+
+                var hits = engine.scan( "aws=AKIAIOSFODNN7EXAMPLE pw=sekret123 mail=a@b.co" );
+
+                var labels = hits.map( h => h.label );
+                expect( labels ).toInclude( "AWS_ACCESS_KEY" );
+                expect( labels ).toInclude( "DB_PW" );
+                expect( labels ).toInclude( "PII_EMAIL" );
+
+                // offsets ascending
+                for ( var i = 2; i <= hits.len(); i++ ) {
+                    expect( hits[ i - 1 ].start ).toBeLTE( hits[ i ].start );
+                }
+            } );
+
+        } );
+
+        describe( "DetectionEngine — conflict resolution", function() {
+
+            it( "prefers higher-priority hits over lower (registry > regex)", function() {
+                // Register an AWS-shaped literal as a high-priority user secret.
+                // RegistryDetector (priority 1) must win over RegexDetector (priority 2)
+                // for the same overlapping range.
+                var key = "AKIAIOSFODNN7EXAMPLE";
+                var registry = new bxAiSentinel.models.detectors.RegistryDetector( secrets: [
+                    { "label": "MY_AWS_DEV_KEY", "value": key, "category": "registry" }
+                ] );
+                var regex = new bxAiSentinel.models.detectors.RegexDetector( catalog: variables.catalog );
+                var engine = new bxAiSentinel.models.DetectionEngine( detectors: [ registry, regex ] );
+
+                var hits = engine.scan( "use " & key & " now" );
+                expect( hits ).toHaveLength( 1 );
+                expect( hits[ 1 ].label ).toBe( "MY_AWS_DEV_KEY" );
+                expect( hits[ 1 ].priority ).toBe( 1 );
+            } );
+
+            it( "at same priority prefers longer matches", function() {
+                var registry = new bxAiSentinel.models.detectors.RegistryDetector( secrets: [
+                    { "label": "SHORT", "value": "key" },
+                    { "label": "LONG",  "value": "key-abc-123" }
+                ] );
+                var engine = new bxAiSentinel.models.DetectionEngine( detectors: [ registry ] );
+
+                var hits = engine.scan( "my key-abc-123 is here" );
+                expect( hits ).toHaveLength( 1 );
+                expect( hits[ 1 ].label ).toBe( "LONG" );
+            } );
+
+            it( "suppresses entropy hits that overlap a regex hit", function() {
+                var regex   = new bxAiSentinel.models.detectors.RegexDetector( catalog: variables.catalog );
+                var entropy = new bxAiSentinel.models.detectors.EntropyDetector();
+                var engine  = new bxAiSentinel.models.DetectionEngine( detectors: [ regex, entropy ] );
+
+                // A GitHub PAT is high entropy AND matches the regex. Only one hit should survive.
+                var token = "ghp_" & repeatString( "a", 36 );
+                var hits  = engine.scan( "GITHUB_TOKEN=" & token );
+
+                expect( hits ).toHaveLength( 1 );
+                expect( hits[ 1 ].label ).toBe( "GITHUB_PAT" );
+            } );
+
+            it( "keeps non-overlapping hits from both detectors", function() {
+                var regex   = new bxAiSentinel.models.detectors.RegexDetector( catalog: variables.catalog );
+                var entropy = new bxAiSentinel.models.detectors.EntropyDetector( threshold: 3.5 );
+                var engine  = new bxAiSentinel.models.DetectionEngine( detectors: [ regex, entropy ] );
+
+                var hits = engine.scan( "known=AKIAIOSFODNN7EXAMPLE plus unknown=aZ3!bX7##kL4_pR9vN2@qT5&mW8%" );
+
+                var labels = hits.map( h => h.label );
+                expect( labels ).toInclude( "AWS_ACCESS_KEY" );
+                expect( labels ).toInclude( "HIGH_ENTROPY_TOKEN" );
+            } );
+
+        } );
+
+        describe( "DetectionEngine.resolveConflicts() directly", function() {
+
+            it( "drops a fully-contained lower-priority hit", function() {
+                var engine = new bxAiSentinel.models.DetectionEngine();
+                var hits   = [
+                    { "start": 5,  "end": 30, "value": "(outer)", "label": "OUTER", "category": "x", "priority": 1, "confidence": 1, "source": "reg" },
+                    { "start": 10, "end": 20, "value": "(inner)", "label": "INNER", "category": "y", "priority": 3, "confidence": 0.6, "source": "ent" }
+                ];
+                var resolved = engine.resolveConflicts( hits );
+                expect( resolved ).toHaveLength( 1 );
+                expect( resolved[ 1 ].label ).toBe( "OUTER" );
+            } );
+
+            it( "keeps adjacent non-overlapping hits", function() {
+                var engine = new bxAiSentinel.models.DetectionEngine();
+                var hits   = [
+                    { "start": 5,  "end": 9,  "value": "a", "label": "A", "category": "x", "priority": 2, "confidence": 1, "source": "r" },
+                    { "start": 10, "end": 14, "value": "b", "label": "B", "category": "x", "priority": 2, "confidence": 1, "source": "r" }
+                ];
+                var resolved = engine.resolveConflicts( hits );
+                expect( resolved ).toHaveLength( 2 );
+            } );
+
+        } );
+
+    }
+
+}

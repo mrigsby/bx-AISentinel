@@ -1,0 +1,120 @@
+/**
+ * RegexDetectorSpec — catalog-backed regex matching + Luhn validation.
+ */
+class extends="testbox.system.BaseSpec" {
+
+    function beforeAll() {
+        variables.catalog = new bxAiSentinel.models.catalog.PatternCatalog().loadBundled();
+        variables.d       = new bxAiSentinel.models.detectors.RegexDetector( catalog: variables.catalog );
+    }
+
+    function run() {
+
+        describe( "RegexDetector — cloud keys", function() {
+
+            it( "detects AWS access key IDs", function() {
+                var hits = variables.d.scan( "use AKIAIOSFODNN7EXAMPLE to authenticate" );
+                var aws  = hits.filter( h => h.label == "AWS_ACCESS_KEY" );
+                expect( aws ).toHaveLength( 1 );
+                expect( aws[ 1 ].value ).toBe( "AKIAIOSFODNN7EXAMPLE" );
+            } );
+
+        } );
+
+        describe( "RegexDetector — vendor tokens", function() {
+
+            it( "detects a GitHub personal access token", function() {
+                var token = "ghp_" & repeatString( "a", 36 );
+                var hits  = variables.d.scan( "export GITHUB_TOKEN=" & token );
+                var gh    = hits.filter( h => h.label == "GITHUB_PAT" );
+                expect( gh ).toHaveLength( 1 );
+                expect( gh[ 1 ].value ).toBe( token );
+            } );
+
+            it( "detects an OpenRouter API key", function() {
+                var token = "sk-or-v1-" & repeatString( "a", 64 );
+                var hits  = variables.d.scan( "header: Authorization: Bearer " & token );
+                var hit   = hits.filter( h => h.label == "OPENROUTER_API_KEY" );
+                expect( hit ).toHaveLength( 1 );
+                expect( hit[ 1 ].value ).toBe( token );
+            } );
+
+            it( "detects a Stripe live key", function() {
+                var token = "sk_live_" & repeatString( "a", 24 );
+                var hits  = variables.d.scan( "charge with " & token );
+                var hit   = hits.filter( h => h.label == "STRIPE_LIVE_KEY" );
+                expect( hit ).toHaveLength( 1 );
+            } );
+
+        } );
+
+        describe( "RegexDetector — generic credentials", function() {
+
+            it( "detects a JWT", function() {
+                var jwt  = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4ifQ.abc123def456";
+                var hits = variables.d.scan( "Bearer " & jwt );
+                expect( hits.filter( h => h.label == "JWT" ) ).toHaveLength( 1 );
+            } );
+
+            it( "detects a Postgres URI with credentials", function() {
+                var uri  = "postgres://myuser:mypassword@db.example.com:5432/mydb";
+                var hits = variables.d.scan( "DATABASE_URL=" & uri );
+                expect( hits.filter( h => h.label == "POSTGRES_URI" ) ).toHaveLength( 1 );
+            } );
+
+        } );
+
+        describe( "RegexDetector — PII + Luhn validation", function() {
+
+            it( "detects a SSN", function() {
+                var hits = variables.d.scan( "patient ssn 123-45-6789 on record" );
+                expect( hits.filter( h => h.label == "PII_SSN" ) ).toHaveLength( 1 );
+            } );
+
+            it( "detects an email address", function() {
+                var hits = variables.d.scan( "contact user.name+tag@example.com today" );
+                expect( hits.filter( h => h.label == "PII_EMAIL" ) ).toHaveLength( 1 );
+            } );
+
+            it( "validates credit cards via Luhn — accepts a real test number", function() {
+                // 4111 1111 1111 1111 is a well-known Visa test number that passes Luhn
+                var hits = variables.d.scan( "card 4111 1111 1111 1111 billing" );
+                expect( hits.filter( h => h.label == "PII_CREDIT_CARD" ) ).toHaveLength( 1 );
+            } );
+
+            it( "rejects a 16-digit run that fails Luhn", function() {
+                // arbitrary 16 digits that do not satisfy Luhn
+                var hits = variables.d.scan( "order 1234567890123456 ready" );
+                expect( hits.filter( h => h.label == "PII_CREDIT_CARD" ) ).toHaveLength( 0 );
+            } );
+
+        } );
+
+        describe( "RegexDetector.luhnCheck()", function() {
+
+            it( "accepts known valid numbers", function() {
+                expect( variables.d.luhnCheck( "4111111111111111" ) ).toBeTrue();
+                expect( variables.d.luhnCheck( "5500000000000004" ) ).toBeTrue();
+                expect( variables.d.luhnCheck( "340000000000009"  ) ).toBeTrue();
+            } );
+
+            it( "rejects known invalid numbers", function() {
+                expect( variables.d.luhnCheck( "1234567890123456" ) ).toBeFalse();
+                expect( variables.d.luhnCheck( "1111111111111111" ) ).toBeFalse();
+            } );
+
+            it( "rejects runs that are too short or too long", function() {
+                expect( variables.d.luhnCheck( "411111111111" ) ).toBeFalse();       // 12 digits
+                expect( variables.d.luhnCheck( "41111111111111111111" ) ).toBeFalse(); // 20 digits
+            } );
+
+            it( "strips separators before validating", function() {
+                expect( variables.d.luhnCheck( "4111-1111-1111-1111" ) ).toBeTrue();
+                expect( variables.d.luhnCheck( "4111 1111 1111 1111" ) ).toBeTrue();
+            } );
+
+        } );
+
+    }
+
+}

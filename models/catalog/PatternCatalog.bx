@@ -1,0 +1,136 @@
+/**
+ * PatternCatalog — loads and composes regex pattern bundles from
+ * `includes/patterns/*.json` plus any user-supplied runtime additions.
+ *
+ * Each bundle file has shape:
+ *     {
+ *         "_meta": { "source": "...", "license": "...", "lastUpdated": "..." },
+ *         "patterns": [
+ *             { "label": "...", "category": "...", "regex": "...", "confidence": 0.0-1.0, ... }
+ *         ]
+ *     }
+ *
+ * The catalog does not compile or execute patterns — RegexDetector consumes
+ * them. Keeping loading and execution separate lets us swap sources (JSON,
+ * YAML, remote feed) without touching detector logic.
+ */
+class {
+
+    property name="patterns"      type="array";
+    property name="patternsDir"   type="string";
+
+    function init( string patternsDir = "" ) {
+        variables.patterns = [];
+
+        if ( len( arguments.patternsDir ) ) {
+            variables.patternsDir = arguments.patternsDir;
+        } else {
+            // Default: ../includes/patterns/ relative to this file
+            variables.patternsDir = expandPath( getDirectoryFromPath( getCurrentTemplatePath() ) & "../../includes/patterns" );
+        }
+
+        return this;
+    }
+
+    /**
+     * Load every `*.json` bundle in the configured directory.
+     */
+    function loadBundled() {
+        if ( !directoryExists( variables.patternsDir ) ) {
+            return this;
+        }
+
+        var files = directoryList(
+            path     : variables.patternsDir,
+            recurse  : false,
+            listInfo : "path",
+            filter   : "*.json"
+        );
+
+        for ( var file in files ) {
+            loadFile( file );
+        }
+
+        return this;
+    }
+
+    /**
+     * Load a single JSON bundle file. Unknown or malformed entries are skipped
+     * — log the warning via the host's LogBox channel in a later phase; for
+     * now silently ignore to avoid surprising the caller at bootstrap.
+     */
+    function loadFile( required string path ) {
+        if ( !fileExists( arguments.path ) ) {
+            return this;
+        }
+
+        var raw = fileRead( arguments.path );
+        var doc = jsonDeserialize( raw );
+
+        if ( !structKeyExists( doc, "patterns" ) || !isArray( doc.patterns ) ) {
+            return this;
+        }
+
+        for ( var p in doc.patterns ) {
+            addPattern( p );
+        }
+
+        return this;
+    }
+
+    /**
+     * Add one pattern to the catalog. Validates required keys.
+     */
+    function addPattern( required struct pattern ) {
+        if ( !structKeyExists( arguments.pattern, "label" ) ) return this;
+        if ( !structKeyExists( arguments.pattern, "regex" ) ) return this;
+
+        variables.patterns.append( {
+            "label"       : arguments.pattern.label,
+            "category"    : arguments.pattern.category    ?: "custom",
+            "regex"       : arguments.pattern.regex,
+            "confidence"  : arguments.pattern.confidence  ?: 0.9,
+            "description" : arguments.pattern.description ?: "",
+            "validator"   : arguments.pattern.validator   ?: ""
+        } );
+
+        return this;
+    }
+
+    array function getAll() {
+        return variables.patterns;
+    }
+
+    array function getByCategory( required string category ) {
+        var cat = arguments.category;
+        return variables.patterns.filter( p => p.category == cat );
+    }
+
+    array function getByLabel( required string label ) {
+        var lbl = arguments.label;
+        return variables.patterns.filter( p => p.label == lbl );
+    }
+
+    numeric function size() {
+        return arrayLen( variables.patterns );
+    }
+
+    function clear() {
+        variables.patterns = [];
+        return this;
+    }
+
+    /**
+     * Remove any pattern whose `category` is not in `enabledCategories`.
+     * Called by the middleware after merging policy, so disabled categories
+     * never reach the RegexDetector.
+     */
+    function filterByCategories( required array enabledCategories ) {
+        var enabled = arguments.enabledCategories;
+        variables.patterns = variables.patterns.filter( p =>
+            arrayContains( enabled, p.category )
+        );
+        return this;
+    }
+
+}

@@ -1,0 +1,94 @@
+/**
+ * RegexDetector — matches text against the configured PatternCatalog.
+ *
+ * Priority 2 (below registry, above entropy). Optional per-pattern validators
+ * (currently only "luhn") drop low-confidence false positives where the
+ * regex shape alone is insufficient (e.g. 16 consecutive digits that do not
+ * actually check as a credit card number).
+ */
+class extends="IDetector" {
+
+    property name="catalog" type="any";
+
+    function init( required any catalog ) {
+        variables.priority   = 2;
+        variables.sourceName = "RegexDetector";
+        variables.catalog    = arguments.catalog;
+        return this;
+    }
+
+    array function scan( required string text ) {
+        var hits    = [];
+        var textLen = len( arguments.text );
+
+        for ( var p in variables.catalog.getAll() ) {
+            var pos = 1;
+            while ( pos <= textLen ) {
+                var match = reFind( p.regex, arguments.text, pos, true );
+                if ( match.pos[ 1 ] == 0 ) {
+                    break;
+                }
+
+                var start = match.pos[ 1 ];
+                var mlen  = match.len[ 1 ];
+                var value = mid( arguments.text, start, mlen );
+
+                if ( passesValidator( p.validator, value ) ) {
+                    hits.append(
+                        makeHit(
+                            start      : start,
+                            end        : start + mlen - 1,
+                            value      : value,
+                            label      : p.label,
+                            category   : p.category,
+                            confidence : p.confidence
+                        )
+                    );
+                }
+
+                pos = start + mlen;
+            }
+        }
+
+        return hits;
+    }
+
+    /**
+     * Optional post-match validator. Unknown / empty validators always pass.
+     */
+    boolean function passesValidator( required string name, required string value ) {
+        switch ( arguments.name ) {
+            case "luhn":
+                return luhnCheck( arguments.value );
+            default:
+                return true;
+        }
+    }
+
+    /**
+     * Luhn checksum over the digits in `value`. Strips whitespace / hyphens.
+     * Used to reject 13-19 digit runs that are not actually card numbers.
+     */
+    boolean function luhnCheck( required string value ) {
+        var digits = reReplace( arguments.value, "[^0-9]", "", "all" );
+        var n      = len( digits );
+        if ( n < 13 || n > 19 ) {
+            return false;
+        }
+
+        var sum   = 0;
+        var flip  = false;
+        for ( var i = n; i >= 1; i-- ) {
+            var d = int( mid( digits, i, 1 ) );
+            if ( flip ) {
+                d = d * 2;
+                if ( d > 9 ) d -= 9;
+            }
+            sum += d;
+            flip = !flip;
+        }
+
+        return ( sum % 10 ) == 0;
+    }
+
+}

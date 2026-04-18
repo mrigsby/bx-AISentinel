@@ -1,0 +1,23 @@
+{
+    "name":"bx-AISentinel Test Harness",
+    "slug":"bx-aisentinel-tests",
+    "version":"0.1.0",
+    "private":true,
+    "description":"Standalone test harness for the bx-AISentinel module. Not published.",
+    "devDependencies":{
+        "testbox":"^7.0.0"
+    },
+    "installPaths":{
+        "testbox":"testbox/"
+    },
+    "testbox":{
+        "runner":[
+            {
+                "default":"http://localhost:8082/runner.bxm"
+            }
+        ]
+    },
+    "scripts":{
+        "test":"testbox run"
+    }
+}

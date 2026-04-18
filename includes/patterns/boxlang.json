@@ -1,0 +1,30 @@
+{
+    "_meta": {
+        "source"      : "bx-AISentinel custom — CFML/BoxLang-specific credential shapes",
+        "license"     : "bundled under Apache-2.0 per module license",
+        "lastUpdated" : "2026-04-17"
+    },
+    "patterns": [
+        {
+            "label"      : "BOXLANG_DATASOURCE_PASSWORD",
+            "category"   : "boxlang",
+            "regex"      : "(?i)\"password\"\\s*:\\s*\"[^\"]{4,}\"",
+            "confidence" : 0.85,
+            "description": "JSON password field (boxlang.json / server.json / datasource blocks)"
+        },
+        {
+            "label"      : "COMMANDBOX_TOKEN",
+            "category"   : "boxlang",
+            "regex"      : "(?i)(commandbox|forgebox)[_\\-]?(token|api[_\\-]?key)\\s*[:=]\\s*[\"']?[A-Za-z0-9_\\-]{20,}[\"']?",
+            "confidence" : 0.9,
+            "description": "CommandBox / ForgeBox auth token assignment"
+        },
+        {
+            "label"      : "CFML_PASSWORD_ASSIGNMENT",
+            "category"   : "boxlang",
+            "regex"      : "(?im)^\\s*(?:local|variables|this|application|request)\\.(?:password|dbpassword|dsnpassword)\\s*=\\s*[\"'][^\"']{4,}[\"']",
+            "confidence" : 0.8,
+            "description": "CFML-style scoped password assignment (lone line)"
+        }
+    ]
+}

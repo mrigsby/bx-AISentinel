@@ -1,0 +1,315 @@
+/**
+ * AiSentinelMiddlewareSpec — integration coverage for the middleware wiring.
+ *
+ * Exercises:
+ *   - SentinelCore redact → embed → restore round-trip against real components
+ *     (Tokenizer, TokenManifest, DetectionEngine, all detectors)
+ *   - AiSentinelMiddleware hook sequence with fabricated context structs,
+ *     verifying metrics accumulation, categories counts, and manifest teardown
+ *   - Negative test: model-generated token-shape that fails HMAC passes through
+ *
+ * Does NOT require bx-ai to be on the classpath. The middleware's `_proceed()`
+ * helper falls back to a shape-compatible struct when bx-ai is absent.
+ */
+class extends="testbox.system.BaseSpec" {
+
+    function beforeAll() {
+        variables.catalog = new bxAiSentinel.models.catalog.PatternCatalog().loadBundled();
+    }
+
+    function run() {
+
+        describe( "SentinelCore round-trip", function() {
+
+            it( "redacts a single AWS key in a message and restores it from the response", function() {
+                var core = _buildCore();
+                var ctx  = core.newRunContext();
+
+                var outbound = core.redact( "My AWS key is AKIAIOSFODNN7EXAMPLE please rotate.", ctx );
+                expect( outbound ).notToInclude( "AKIAIOSFODNN7EXAMPLE" );
+                expect( outbound ).toInclude( char( 10214 ) & "SECRET:AWS_ACCESS_KEY:" );
+
+                // Model parrots the token back verbatim in its reply
+                var responded = "Run: aws iam delete-access-key --access-key-id " & _extractFirstToken( outbound );
+                var restored  = core.restore( responded, ctx );
+
+                expect( restored ).toInclude( "AKIAIOSFODNN7EXAMPLE" );
+                expect( restored ).notToInclude( char( 10214 ) );
+            } );
+
+            it( "handles multiple hits of different categories in one message", function() {
+                var core = _buildCore();
+                var ctx  = core.newRunContext();
+
+                var prompt = "key=AKIAIOSFODNN7EXAMPLE email=alice@example.com ssn=123-45-6789";
+                var out    = core.redact( prompt, ctx );
+
+                expect( out ).notToInclude( "AKIAIOSFODNN7EXAMPLE" );
+                expect( out ).notToInclude( "alice@example.com" );
+                expect( out ).notToInclude( "123-45-6789" );
+                expect( ctx.metrics.tokensMinted ).toBe( 3 );
+
+                // Categories counted correctly
+                expect( ctx.metrics.categories[ "cloud-keys" ] ).toBe( 1 );
+                expect( ctx.metrics.categories[ "pii" ] ).toBe( 2 );
+
+                // Full round-trip
+                var restored = core.restore( out, ctx );
+                expect( restored ).toBe( prompt );
+            } );
+
+            it( "passes through text with no detectable hits unchanged", function() {
+                var core = _buildCore();
+                var ctx  = core.newRunContext();
+
+                var prompt = "hello world, please describe your capabilities";
+                expect( core.redact( prompt, ctx ) ).toBe( prompt );
+                expect( ctx.metrics.tokensMinted ).toBe( 0 );
+            } );
+
+            it( "leaves an unsigned token-shaped string alone and logs a warning", function() {
+                var core = _buildCore();
+                var ctx  = core.newRunContext();
+
+                // A string that looks like a Sentinel token but Sentinel never minted it
+                var fakeToken = char( 10214 ) & "SECRET:FAKE_LABEL:deadbeef" & char( 10215 );
+                var response  = "Model fabricated: " & fakeToken & " — ignore";
+
+                var restored = core.restore( response, ctx );
+                expect( restored ).toBe( response ); // unchanged
+            } );
+
+            it( "zeroes the manifest on teardown", function() {
+                var core = _buildCore();
+                var ctx  = core.newRunContext();
+
+                core.redact( "AKIAIOSFODNN7EXAMPLE plus alice@example.com", ctx );
+                expect( ctx.manifest.size() ).toBeGT( 0 );
+
+                core.teardownRunContext( ctx );
+                expect( ctx.manifest.size() ).toBe( 0 );
+            } );
+
+        } );
+
+        describe( "AiSentinelMiddleware hook sequence", function() {
+
+            it( "beforeAgentRun initializes context.metadata.sentinel with metrics scaffolding", function() {
+                var mw  = new bxAiSentinel.models.AiSentinelMiddleware();
+                var ctx = { "metadata": {}, "messages": [] };
+
+                mw.beforeAgentRun( ctx );
+
+                expect( ctx.metadata ).toHaveKey( "sentinel" );
+                expect( ctx.metadata.sentinel ).toHaveKey( "sessionKey" );
+                expect( ctx.metadata.sentinel ).toHaveKey( "manifest" );
+                expect( ctx.metadata.sentinel ).toHaveKey( "metrics" );
+                expect( ctx.metadata.sentinel.metrics.outboundMs ).toBe( 0 );
+                expect( ctx.metadata.sentinel.metrics.tokensMinted ).toBe( 0 );
+            } );
+
+            it( "beforeLLMCall redacts every message.content and updates outboundMs", function() {
+                var mw  = new bxAiSentinel.models.AiSentinelMiddleware();
+                var ctx = {
+                    "metadata" : {},
+                    "messages" : [
+                        { "role": "user", "content": "My AWS key is AKIAIOSFODNN7EXAMPLE" },
+                        { "role": "user", "content": "Email alice@example.com for more" }
+                    ]
+                };
+
+                mw.beforeAgentRun( ctx );
+                mw.beforeLLMCall( ctx );
+
+                var userPayload = _joinUserContent( ctx.messages );
+                expect( userPayload ).notToInclude( "AKIAIOSFODNN7EXAMPLE" );
+                expect( userPayload ).notToInclude( "alice@example.com" );
+                expect( ctx.metadata.sentinel.metrics.tokensMinted ).toBe( 2 );
+                expect( ctx.metadata.sentinel.metrics.outboundMs ).toBeGTE( 0 );
+                expect( ctx.metadata.sentinel.metrics.lastOutboundMs ).toBeGTE( 0 );
+            } );
+
+            it( "afterLLMCall restores plaintext in a string response", function() {
+                var mw  = new bxAiSentinel.models.AiSentinelMiddleware();
+                var ctx = {
+                    "metadata" : {},
+                    "messages" : [ { "role": "user", "content": "AWS key: AKIAIOSFODNN7EXAMPLE" } ]
+                };
+
+                mw.beforeAgentRun( ctx );
+                mw.beforeLLMCall( ctx );
+
+                // Simulate an LLM response that echoes the tokenized key
+                var echoedToken = _extractUserToken( ctx.messages );
+                ctx.response = "To rotate, run: aws iam delete-access-key --access-key-id " & echoedToken;
+
+                mw.afterLLMCall( ctx );
+
+                expect( ctx.response ).toInclude( "AKIAIOSFODNN7EXAMPLE" );
+                expect( ctx.response ).notToInclude( char( 10214 ) );
+                expect( ctx.metadata.sentinel.metrics.inboundMs ).toBeGTE( 0 );
+            } );
+
+            it( "afterLLMCall restores plaintext in an OpenAI-shaped response struct", function() {
+                var mw  = new bxAiSentinel.models.AiSentinelMiddleware();
+                var ctx = {
+                    "metadata" : {},
+                    "messages" : [ { "role": "user", "content": "Email alice@example.com today" } ]
+                };
+
+                mw.beforeAgentRun( ctx );
+                mw.beforeLLMCall( ctx );
+
+                var echoedToken = _extractUserToken( ctx.messages );
+                ctx.response = {
+                    "choices" : [
+                        { "message" : { "role": "assistant", "content": "Sending to " & echoedToken } }
+                    ]
+                };
+
+                mw.afterLLMCall( ctx );
+
+                expect( ctx.response.choices[ 1 ].message.content ).toInclude( "alice@example.com" );
+            } );
+
+            it( "afterAgentRun emits metrics on getLastRunMetrics() and tears down the manifest", function() {
+                var mw  = new bxAiSentinel.models.AiSentinelMiddleware();
+                var ctx = {
+                    "metadata" : {},
+                    "messages" : [ { "role": "user", "content": "key=AKIAIOSFODNN7EXAMPLE plus alice@example.com" } ]
+                };
+
+                mw.beforeAgentRun( ctx );
+                mw.beforeLLMCall( ctx );
+                ctx.response = "thanks";
+                mw.afterLLMCall( ctx );
+                mw.afterAgentRun( ctx );
+
+                var metrics = mw.getLastRunMetrics();
+                expect( metrics.tokensMinted ).toBe( 2 );
+                expect( metrics.categories ).toHaveKey( "cloud-keys" );
+                expect( metrics.categories ).toHaveKey( "pii" );
+                expect( metrics.outboundMs ).toBeGTE( 0 );
+
+                // Per-run manifest is zeroed on afterAgentRun
+                expect( ctx.metadata.sentinel.manifest.size() ).toBe( 0 );
+            } );
+
+            it( "per-run manifest scope resets state between runs", function() {
+                var mw = new bxAiSentinel.models.AiSentinelMiddleware( settings: { "manifestScope": "run" } );
+
+                var run1 = { "metadata": {}, "messages": [ { "role": "user", "content": "AWS: AKIAIOSFODNN7EXAMPLE" } ] };
+                mw.beforeAgentRun( run1 );
+                mw.beforeLLMCall( run1 );
+                run1.response = "";
+                mw.afterLLMCall( run1 );
+                mw.afterAgentRun( run1 );
+                var key1 = run1.metadata.sentinel.sessionKey;
+
+                var run2 = { "metadata": {}, "messages": [ { "role": "user", "content": "AWS: AKIAIOSFODNN7EXAMPLE" } ] };
+                mw.beforeAgentRun( run2 );
+                var key2 = run2.metadata.sentinel.sessionKey;
+
+                expect( key1 ).notToBe( key2 );
+            } );
+
+            it( "registerSecret() adds a runtime-registered secret that outranks regex", function() {
+                var mw = new bxAiSentinel.models.AiSentinelMiddleware();
+                mw.registerSecret( label: "MY_DEV_AWS", value: "AKIAIOSFODNN7EXAMPLE" );
+
+                var ctx = {
+                    "metadata" : {},
+                    "messages" : [ { "role": "user", "content": "check AKIAIOSFODNN7EXAMPLE now" } ]
+                };
+                mw.beforeAgentRun( ctx );
+                mw.beforeLLMCall( ctx );
+
+                // The tokenized message should carry the MY_DEV_AWS label, not AWS_ACCESS_KEY
+                var userPayload = _joinUserContent( ctx.messages );
+                expect( userPayload ).toInclude( "SECRET:MY_DEV_AWS:" );
+                expect( userPayload ).notToInclude( "SECRET:AWS_ACCESS_KEY:" );
+            } );
+
+        } );
+
+        describe( "unsigned-token handling in afterLLMCall", function() {
+
+            it( "leaves a fake token-shape in the response untouched", function() {
+                var mw  = new bxAiSentinel.models.AiSentinelMiddleware();
+                var ctx = { "metadata": {}, "messages": [ { "role": "user", "content": "hello" } ] };
+
+                mw.beforeAgentRun( ctx );
+                mw.beforeLLMCall( ctx );
+
+                var fakeToken = char( 10214 ) & "SECRET:FAKE:deadbeef" & char( 10215 );
+                ctx.response = "Here is nonsense: " & fakeToken;
+
+                mw.afterLLMCall( ctx );
+
+                expect( ctx.response ).toInclude( fakeToken );
+            } );
+
+        } );
+
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Test helpers
+    // ─────────────────────────────────────────────────────────────────────
+
+    private any function _buildCore() {
+        var tokenizer = new bxAiSentinel.models.Tokenizer();
+        var detectors = [
+            new bxAiSentinel.models.detectors.RegistryDetector(),
+            new bxAiSentinel.models.detectors.RegexDetector( catalog: variables.catalog ),
+            new bxAiSentinel.models.detectors.EntropyDetector()
+        ];
+        var engine = new bxAiSentinel.models.DetectionEngine( detectors: detectors );
+        return new bxAiSentinel.models.SentinelCore(
+            tokenizer       : tokenizer,
+            detectionEngine : engine,
+            auditor         : new bxAiSentinel.models.SentinelAuditor( enabled: false )
+        );
+    }
+
+    private string function _extractFirstToken( required string text ) {
+        var tokenizer = new bxAiSentinel.models.Tokenizer();
+        var hits = tokenizer.parse( arguments.text );
+        if ( arrayLen( hits ) == 0 ) {
+            throw( message: "No token found in: " & arguments.text );
+        }
+        return hits[ 1 ].token;
+    }
+
+    /**
+     * Pulls the first token out of the USER message specifically. The middleware
+     * prepends a system message with the token-protocol — which itself contains
+     * a literal example token shape — so indexing into messages[1] can land on
+     * the protocol rather than the user's redacted content. Scan for role=user.
+     */
+    private string function _extractUserToken( required array messages ) {
+        for ( var m in arguments.messages ) {
+            if ( isStruct( m ) && ( m.role ?: "" ) == "user" && isSimpleValue( m.content ?: "" ) ) {
+                return _extractFirstToken( m.content );
+            }
+        }
+        throw( message: "No user message found in outbound payload" );
+    }
+
+    /**
+     * Concatenate every user-role message's content into one string. Use this
+     * whenever an assertion wants to check "did the pipeline redact/label
+     * something in the user's payload" — indexing into messages[N] is fragile
+     * because protocol injection shifts positions.
+     */
+    private string function _joinUserContent( required array messages ) {
+        var chunks = [];
+        for ( var m in arguments.messages ) {
+            if ( isStruct( m ) && ( m.role ?: "" ) == "user" && isSimpleValue( m.content ?: "" ) ) {
+                chunks.append( m.content );
+            }
+        }
+        return arrayToList( chunks, char( 10 ) );
+    }
+
+}

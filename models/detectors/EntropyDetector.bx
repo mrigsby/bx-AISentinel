@@ -1,0 +1,110 @@
+/**
+ * EntropyDetector — catches unknown / future secret formats by spotting
+ * unusually random-looking runs of non-whitespace characters.
+ *
+ * Algorithm:
+ *   1. Split text into contiguous non-whitespace runs of length >= minLength.
+ *   2. For each run, compute Shannon entropy in bits/char.
+ *   3. If entropy >= threshold AND charset is mixed (letters + digits/symbols),
+ *      flag it as HIGH_ENTROPY_TOKEN.
+ *
+ * Lowest-priority detector — higher-priority hits from registry / regex
+ * will suppress any overlap.
+ */
+class extends="IDetector" {
+
+    property name="minLength"   type="numeric" default="20";
+    property name="threshold"   type="numeric" default="4.5";
+    property name="requireMixedCharset" type="boolean" default="true";
+
+    function init(
+                 numeric minLength   = 20,
+                 numeric threshold   = 4.5,
+                 boolean requireMixedCharset = true
+    ) {
+        variables.priority   = 3;
+        variables.sourceName = "EntropyDetector";
+        variables.minLength  = arguments.minLength;
+        variables.threshold  = arguments.threshold;
+        variables.requireMixedCharset = arguments.requireMixedCharset;
+        return this;
+    }
+
+    array function scan( required string text ) {
+        var hits     = [];
+        var runRegex = "\S{" & variables.minLength & ",}";
+        var pos      = 1;
+        var textLen  = len( arguments.text );
+
+        while ( pos <= textLen ) {
+            var match = reFind( runRegex, arguments.text, pos, true );
+            if ( match.pos[ 1 ] == 0 ) {
+                break;
+            }
+
+            var runStart = match.pos[ 1 ];
+            var runLen   = match.len[ 1 ];
+            var runValue = mid( arguments.text, runStart, runLen );
+
+            var entropy = shannonEntropy( runValue );
+            var mixed   = !variables.requireMixedCharset || hasMixedCharset( runValue );
+
+            if ( entropy >= variables.threshold && mixed ) {
+                hits.append(
+                    makeHit(
+                        start      : runStart,
+                        end        : runStart + runLen - 1,
+                        value      : runValue,
+                        label      : "HIGH_ENTROPY_TOKEN",
+                        category   : "entropy",
+                        confidence : min( 1.0, ( entropy - variables.threshold ) / 2 + 0.5 )
+                    )
+                );
+            }
+
+            pos = runStart + runLen;
+        }
+
+        return hits;
+    }
+
+    /**
+     * Shannon entropy in bits per character.
+     */
+    numeric function shannonEntropy( required string text ) {
+        var textLen = len( arguments.text );
+        if ( textLen == 0 ) {
+            return 0;
+        }
+
+        var counts = {};
+        for ( var i = 1; i <= textLen; i++ ) {
+            var c = mid( arguments.text, i, 1 );
+            counts[ c ] = structKeyExists( counts, c ) ? counts[ c ] + 1 : 1;
+        }
+
+        var entropy = 0;
+        var ln2     = log( 2 );
+        for ( var c in counts ) {
+            var p    = counts[ c ] / textLen;
+            entropy -= p * ( log( p ) / ln2 );
+        }
+
+        return entropy;
+    }
+
+    /**
+     * True if the string contains at least two of { lowercase, uppercase, digit, symbol }.
+     * Filters out long runs of e.g. base64-y lowercase-plus-digits (which still
+     * pass the entropy gate) vs. URLs, paths, and alphabetic prose.
+     */
+    boolean function hasMixedCharset( required string text ) {
+        var classes = 0;
+        if ( reFind( "[a-z]", arguments.text ) ) classes++;
+        if ( reFind( "[A-Z]", arguments.text ) ) classes++;
+        if ( reFind( "[0-9]", arguments.text ) ) classes++;
+        if ( reFind( "[^a-zA-Z0-9\s]", arguments.text ) ) classes++;
+        return classes >= 2;
+    }
+
+}

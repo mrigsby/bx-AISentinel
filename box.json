@@ -1,0 +1,47 @@
+{
+    "name"        : "BX AI Sentinel Middleware",
+    "slug"        : "bx-aisentinel",
+    "version"     : "0.1.0",
+    "author"      : "Ortus Solutions, Corp",
+    "location"    : "forgeboxStorage",
+    "homepage"    : "https://www.ortussolutions.com",
+    "description" : "BoxLang AI middleware that tokenizes secrets, credentials, and PII in outbound LLM prompts and restores them on the inbound response. Drop-in, provider-agnostic, per-call timing metrics.",
+    "type"        : "modules",
+    "keywords"    : [
+        "boxlang",
+        "bx-ai",
+        "ai",
+        "middleware",
+        "security",
+        "pii",
+        "redaction",
+        "tokenization",
+        "secrets",
+        "llm"
+    ],
+    "dependencies": {
+        "bx-ai": "^1.0.0"
+    },
+    "devDependencies": {
+        "testbox": "^5.0.0"
+    },
+    "license": [
+        {
+            "type": "Apache2",
+            "url" : "https://www.apache.org/licenses/LICENSE-2.0"
+        }
+    ],
+    "testbox": {
+        "runner": [
+            { "default": "http://localhost:8080/tests/runner.bxm" }
+        ]
+    },
+    "ignore": [
+        "**/.*",
+        "tests",
+        "*.md"
+    ],
+    "scripts": {
+        "test": "testbox run"
+    }
+}

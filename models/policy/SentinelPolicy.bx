@@ -1,0 +1,193 @@
+/**
+ * SentinelPolicy — resolves effective module settings across four layers.
+ *
+ * Precedence (highest wins):
+ *   1. Constructor-passed `overrides` struct
+ *   2. Project-root `.sentinel.json`
+ *   3. Application `boxlang.json` → `bxSentinel` key (or `modules.bx-aisentinel`)
+ *   4. Module defaults (this file's `getDefaults()`)
+ *
+ * Merge rules:
+ *   - Scalars / structs / most arrays: overridden verbatim by a higher layer.
+ *   - `registeredSecrets` and `customPatterns`: appended across layers so
+ *     every layer can contribute — that is how a host app naturally adds
+ *     local secrets on top of a shared base config.
+ */
+class {
+
+    property name="settings"        type="struct";
+    property name="sourceReport"    type="struct";
+
+    function init(
+                 struct overrides       = {},
+                 string boxlangJsonPath = "",
+                 string sentinelJsonPath= ""
+    ) {
+        variables.sourceReport = {
+            "defaultsApplied"    : true,
+            "boxlangJsonLoaded"  : false,
+            "sentinelJsonLoaded" : false,
+            "overridesApplied"   : structCount( arguments.overrides ) > 0
+        };
+
+        var merged = getDefaults();
+
+        var boxlangPath  = len( arguments.boxlangJsonPath )  ? arguments.boxlangJsonPath  : _defaultBoxlangJsonPath();
+        var sentinelPath = len( arguments.sentinelJsonPath ) ? arguments.sentinelJsonPath : _defaultSentinelJsonPath();
+
+        if ( len( boxlangPath ) && fileExists( boxlangPath ) ) {
+            var bx = _readBoxlangJson( boxlangPath );
+            if ( structCount( bx ) ) {
+                _mergeLayer( merged, bx );
+                variables.sourceReport.boxlangJsonLoaded = true;
+            }
+        }
+
+        if ( len( sentinelPath ) && fileExists( sentinelPath ) ) {
+            var sj = _readJson( sentinelPath );
+            if ( structCount( sj ) ) {
+                _mergeLayer( merged, sj );
+                variables.sourceReport.sentinelJsonLoaded = true;
+            }
+        }
+
+        if ( structCount( arguments.overrides ) ) {
+            _mergeLayer( merged, arguments.overrides );
+        }
+
+        variables.settings = merged;
+        return this;
+    }
+
+    struct function getDefaults() {
+        return {
+            "entropyThreshold"      : 4.5,
+            "entropyMinLength"      : 20,
+            "requireMixedCharset"   : true,
+            "manifestScope"         : "run",
+            "failurePolicy"         : "pass-through",
+            "metricsEnabled"        : true,
+            "logWarningsOnUnsigned" : true,
+            "categoriesEnabled"     : [ "cloud-keys", "vendor-tokens", "generic", "pii", "boxlang", "entropy", "registry" ],
+            "enableRegistryDetector": true,
+            "enableRegexDetector"   : true,
+            "enableEntropyDetector" : true,
+            "registeredSecrets"     : [],
+            "customPatterns"        : [],
+            "auditLogFile"          : "bx-aisentinel",
+            "auditEnabled"          : true,
+            "explainTokensToLLM"    : true,
+            "tokenProtocolPath"     : ""
+        };
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Accessors
+    // ─────────────────────────────────────────────────────────────────────
+
+    struct function getSettings()    { return variables.settings; }
+    struct function getSourceReport(){ return variables.sourceReport; }
+
+    any function get( required string key, any fallback = "" ) {
+        return structKeyExists( variables.settings, arguments.key )
+            ? variables.settings[ arguments.key ]
+            : arguments.fallback;
+    }
+
+    numeric function getEntropyThreshold()  { return variables.settings.entropyThreshold; }
+    numeric function getEntropyMinLength()  { return variables.settings.entropyMinLength; }
+    boolean function requiresMixedCharset() { return variables.settings.requireMixedCharset; }
+    string  function getManifestScope()     { return variables.settings.manifestScope; }
+    string  function getFailurePolicy()     { return variables.settings.failurePolicy; }
+    boolean function isMetricsEnabled()     { return variables.settings.metricsEnabled; }
+    boolean function isAuditEnabled()       { return variables.settings.auditEnabled; }
+    string  function getAuditLogFile()      { return variables.settings.auditLogFile; }
+
+    boolean function isRegistryDetectorEnabled() { return variables.settings.enableRegistryDetector; }
+    boolean function isRegexDetectorEnabled()    { return variables.settings.enableRegexDetector; }
+    boolean function isEntropyDetectorEnabled()  { return variables.settings.enableEntropyDetector; }
+    boolean function isTokenCoachingEnabled()    { return variables.settings.explainTokensToLLM; }
+    string  function getTokenProtocolPath()      { return variables.settings.tokenProtocolPath; }
+
+    boolean function isCategoryEnabled( required string category ) {
+        return arrayContains( variables.settings.categoriesEnabled, arguments.category );
+    }
+
+    array function getEnabledCategories() {
+        return variables.settings.categoriesEnabled;
+    }
+
+    array function getRegisteredSecrets() {
+        return variables.settings.registeredSecrets;
+    }
+
+    array function getCustomPatterns() {
+        return variables.settings.customPatterns;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Internals
+    // ─────────────────────────────────────────────────────────────────────
+
+    /**
+     * Merge `src` into `target` in place. Appending-array keys are handled
+     * specially; everything else is a straight overwrite.
+     */
+    private function _mergeLayer( required struct target, required struct src ) {
+        var appendingKeys = [ "registeredSecrets", "customPatterns" ];
+
+        for ( var key in arguments.src ) {
+            if ( arrayContains( appendingKeys, key ) && isArray( arguments.src[ key ] ) ) {
+                if ( !structKeyExists( arguments.target, key ) || !isArray( arguments.target[ key ] ) ) {
+                    arguments.target[ key ] = [];
+                }
+                for ( var item in arguments.src[ key ] ) {
+                    arguments.target[ key ].append( item );
+                }
+            } else {
+                arguments.target[ key ] = arguments.src[ key ];
+            }
+        }
+    }
+
+    /**
+     * Read `boxlang.json` and extract the bx-aisentinel section. Accepts either
+     * a top-level `bxSentinel` key or `modules["bx-aisentinel"]`.
+     */
+    private struct function _readBoxlangJson( required string path ) {
+        var doc = _readJson( arguments.path );
+        if ( !structCount( doc ) ) return {};
+
+        if ( structKeyExists( doc, "bxSentinel" ) && isStruct( doc.bxSentinel ) ) {
+            return doc.bxSentinel;
+        }
+        if ( structKeyExists( doc, "modules" ) && isStruct( doc.modules )
+             && structKeyExists( doc.modules, "bx-aisentinel" )
+             && isStruct( doc.modules[ "bx-aisentinel" ] ) ) {
+            return doc.modules[ "bx-aisentinel" ];
+        }
+        return {};
+    }
+
+    private struct function _readJson( required string path ) {
+        try {
+            var raw = fileRead( arguments.path );
+            if ( !len( raw ) ) return {};
+            var doc = jsonDeserialize( raw );
+            return isStruct( doc ) ? doc : {};
+        } catch ( any e ) {
+            return {};
+        }
+    }
+
+    private string function _defaultBoxlangJsonPath() {
+        try { return expandPath( "/boxlang.json" ); }
+        catch ( any e ) { return ""; }
+    }
+
+    private string function _defaultSentinelJsonPath() {
+        try { return expandPath( "/.sentinel.json" ); }
+        catch ( any e ) { return ""; }
+    }
+
+}

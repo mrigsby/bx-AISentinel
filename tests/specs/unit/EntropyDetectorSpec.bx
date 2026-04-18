@@ -1,0 +1,87 @@
+/**
+ * EntropyDetectorSpec — Shannon entropy gate + mixed-charset rule.
+ */
+class extends="testbox.system.BaseSpec" {
+
+    function beforeAll() {
+        variables.d = new bxAiSentinel.models.detectors.EntropyDetector();
+    }
+
+    function run() {
+
+        describe( "EntropyDetector.shannonEntropy()", function() {
+
+            it( "returns 0 for an empty string", function() {
+                expect( variables.d.shannonEntropy( "" ) ).toBe( 0 );
+            } );
+
+            it( "returns 0 for a single repeated character", function() {
+                expect( variables.d.shannonEntropy( "aaaaaaaaaa" ) ).toBe( 0 );
+            } );
+
+            it( "returns higher entropy for more-random strings", function() {
+                var low  = variables.d.shannonEntropy( "aaaaabbbbb" );
+                var high = variables.d.shannonEntropy( "aZ3!bX7##kL4_pR9" );
+                expect( high ).toBeGT( low );
+            } );
+
+        } );
+
+        describe( "EntropyDetector.hasMixedCharset()", function() {
+
+            it( "requires at least two classes (letter + digit / symbol / case)", function() {
+                expect( variables.d.hasMixedCharset( "alllowercase" ) ).toBeFalse();
+                expect( variables.d.hasMixedCharset( "ALLUPPERCASE" ) ).toBeFalse();
+                expect( variables.d.hasMixedCharset( "1234567890" ) ).toBeFalse();
+                expect( variables.d.hasMixedCharset( "abc123" ) ).toBeTrue();
+                expect( variables.d.hasMixedCharset( "MixedCase" ) ).toBeTrue();
+                expect( variables.d.hasMixedCharset( "abc!@##" ) ).toBeTrue();
+            } );
+
+        } );
+
+        describe( "EntropyDetector.scan()", function() {
+
+            it( "flags a high-entropy run as HIGH_ENTROPY_TOKEN", function() {
+                var text = "keep this out: aZ3!bX7##kL4_pR9vN2@qT5&mW8%";
+                var hits = variables.d.scan( text );
+                expect( hits ).toHaveLength( 1 );
+                expect( hits[ 1 ].label ).toBe( "HIGH_ENTROPY_TOKEN" );
+                expect( hits[ 1 ].priority ).toBe( 3 );
+            } );
+
+            it( "skips runs shorter than minLength", function() {
+                var hits = variables.d.scan( "short: aBc1!" );
+                expect( hits ).toHaveLength( 0 );
+            } );
+
+            it( "skips low-entropy long runs (repeated chars)", function() {
+                var hits = variables.d.scan( "long-but-boring: aaaaaaaaaaaaaaaaaaaaa" );
+                expect( hits ).toHaveLength( 0 );
+            } );
+
+            it( "skips runs that lack a mixed charset by default", function() {
+                // all-lowercase 30-char english-ish run — decent entropy but one charset
+                var hits = variables.d.scan( "consequentlyarchaeologicallyenc" );
+                expect( hits ).toHaveLength( 0 );
+            } );
+
+            it( "finds multiple distinct entropy hits in one text", function() {
+                var a = "first:" & "aZ3!bX7##kL4_pR9vN2@qT5&mW8%";
+                var b = a & " and second:" & "pQ7##rS2$tU5%vW8^xY1&zA4*bC7!";
+                var hits = variables.d.scan( b );
+                expect( hits ).toHaveLength( 2 );
+            } );
+
+            it( "respects a custom threshold", function() {
+                var strict = new bxAiSentinel.models.detectors.EntropyDetector( threshold: 6.5 );
+                // 4.5-ish entropy string — stricter detector should drop it
+                var hits   = strict.scan( "possibly-secretly: aZ3!bX7##kL4_pR9" );
+                expect( hits ).toHaveLength( 0 );
+            } );
+
+        } );
+
+    }
+
+}

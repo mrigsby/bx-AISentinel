@@ -1,0 +1,89 @@
+/**
+ * DetectionEngine — composes multiple IDetector instances and resolves
+ * overlapping hits.
+ *
+ * Conflict resolution:
+ *   1. Walk all hits in priority order (1 = registry, 2 = regex, 3 = entropy).
+ *   2. Within the same priority, longer hits win.
+ *   3. Accept a hit only if it does NOT overlap with any already-accepted hit.
+ *   4. Return the accepted hits sorted by start offset (ascending) so a
+ *      right-to-left replace walk can use them directly.
+ *
+ * Input text is scanned by every registered detector; cost scales linearly
+ * with #patterns * #text, which is fine for Tier 0 budgets.
+ */
+class {
+
+    property name="detectors" type="array";
+
+    function init( array detectors = [] ) {
+        variables.detectors = arguments.detectors;
+        return this;
+    }
+
+    function addDetector( required any detector ) {
+        variables.detectors.append( arguments.detector );
+        return this;
+    }
+
+    array function getDetectors() {
+        return variables.detectors;
+    }
+
+    /**
+     * Scan text and return deduplicated, priority-resolved, offset-sorted hits.
+     */
+    array function scan( required string text ) {
+        var allHits = [];
+        for ( var d in variables.detectors ) {
+            for ( var h in d.scan( arguments.text ) ) {
+                allHits.append( h );
+            }
+        }
+
+        return resolveConflicts( allHits );
+    }
+
+    /**
+     * Core conflict resolution.
+     */
+    array function resolveConflicts( required array hits ) {
+        // Sort by (priority asc, length desc, start asc) so the best claim is tried first.
+        var sorted = duplicate( arguments.hits );
+        arraySort( sorted, function( a, b ) {
+            if ( a.priority != b.priority ) {
+                return a.priority - b.priority;
+            }
+            var aLen = a.end - a.start + 1;
+            var bLen = b.end - b.start + 1;
+            if ( aLen != bLen ) {
+                return bLen - aLen;
+            }
+            return a.start - b.start;
+        } );
+
+        var accepted = [];
+        for ( var h in sorted ) {
+            if ( !overlapsAny( h, accepted ) ) {
+                accepted.append( h );
+            }
+        }
+
+        // Final sort by start offset asc.
+        arraySort( accepted, ( a, b ) => a.start - b.start );
+        return accepted;
+    }
+
+    /**
+     * True if `hit` overlaps any hit already in `accepted` (inclusive ranges).
+     */
+    boolean function overlapsAny( required struct hit, required array accepted ) {
+        for ( var a in arguments.accepted ) {
+            if ( !( arguments.hit.end < a.start || arguments.hit.start > a.end ) ) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+}

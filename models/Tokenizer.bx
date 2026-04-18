@@ -1,0 +1,129 @@
+/**
+ * Tokenizer — owns the bx-AISentinel token wire format.
+ *
+ * Format:  ⟦SECRET:<LABEL>:<hmac8>⟧
+ *          │       │         │
+ *          │       │         └── 8 hex chars = truncated HMAC-SHA256 over "<label>:<value>" with sessionKey
+ *          │       └──────────── UPPER_SNAKE label (e.g. AWS_ACCESS_KEY)
+ *          └──────────────────── U+27E6 / U+27E7 math brackets
+ *
+ * See DOCUMENTATION/04-token-format.md for design rationale.
+ */
+class {
+
+    variables.LEFT_BRACKET  = char( 10214 ); // U+27E6 ⟦
+    variables.RIGHT_BRACKET = char( 10215 ); // U+27E7 ⟧
+    variables.HMAC_LENGTH   = 8;
+    variables.TOKEN_REGEX   = variables.LEFT_BRACKET & "SECRET:([A-Z0-9_]+):([a-f0-9]{8})" & variables.RIGHT_BRACKET;
+
+    function init() {
+        return this;
+    }
+
+    /**
+     * Produce a token for the given (label, value) under the given sessionKey.
+     * Deterministic: the same (label, value, sessionKey) triple always yields
+     * the same token string within a session.
+     *
+     * @label        UPPER_SNAKE_CASE category tag (e.g. AWS_ACCESS_KEY)
+     * @value        The plaintext being hidden
+     * @sessionKey   Per-run HMAC signing key
+     */
+    string function mint(
+        required string label,
+        required string value,
+        required string sessionKey
+    ) {
+        var fullHmac = hmac( arguments.label & ":" & arguments.value, arguments.sessionKey, "HmacSHA256" );
+        var suffix   = lcase( left( fullHmac, variables.HMAC_LENGTH ) );
+        return variables.LEFT_BRACKET & "SECRET:" & arguments.label & ":" & suffix & variables.RIGHT_BRACKET;
+    }
+
+    /**
+     * Find every token-shaped substring in a text. Does NOT verify HMACs —
+     * call verify() on each candidate.
+     *
+     * @text  The text to scan
+     * @return Array of { token, label, hmac, start, end } structs
+     */
+    array function parse( required string text ) {
+        var results = [];
+        var pos     = 1;
+        var textLen = len( arguments.text );
+
+        while ( pos <= textLen ) {
+            var match = reFind( variables.TOKEN_REGEX, arguments.text, pos, true );
+
+            if ( match.pos[ 1 ] == 0 ) {
+                break;
+            }
+
+            var fullToken = mid( arguments.text, match.pos[ 1 ], match.len[ 1 ] );
+            var label     = mid( arguments.text, match.pos[ 2 ], match.len[ 2 ] );
+            var hmacSuffix= mid( arguments.text, match.pos[ 3 ], match.len[ 3 ] );
+
+            results.append( {
+                "token" : fullToken,
+                "label" : label,
+                "hmac"  : hmacSuffix,
+                "start" : match.pos[ 1 ],
+                "end"   : match.pos[ 1 ] + match.len[ 1 ] - 1
+            } );
+
+            pos = match.pos[ 1 ] + match.len[ 1 ];
+        }
+
+        return results;
+    }
+
+    /**
+     * Verify that a token was minted with the given sessionKey and value.
+     * Returns true iff recomputing the HMAC over the token's embedded label
+     * plus the supplied plaintext value matches the token's embedded suffix.
+     *
+     * This is the check used on candidate restorations: given a token we found
+     * in the response and the plaintext we remember from the manifest, confirm
+     * they belong together.
+     *
+     * @token       A full token string (⟦SECRET:…:…⟧)
+     * @value       The plaintext we believe the token stands for
+     * @sessionKey  The run's signing key
+     */
+    boolean function verify(
+        required string token,
+        required string value,
+        required string sessionKey
+    ) {
+        var match = reFind( variables.TOKEN_REGEX, arguments.token, 1, true );
+
+        if ( match.pos[ 1 ] != 1 || match.len[ 1 ] != len( arguments.token ) ) {
+            return false;
+        }
+
+        var label     = mid( arguments.token, match.pos[ 2 ], match.len[ 2 ] );
+        var suffix    = mid( arguments.token, match.pos[ 3 ], match.len[ 3 ] );
+        var expected  = lcase( left( hmac( label & ":" & arguments.value, arguments.sessionKey, "HmacSHA256" ), variables.HMAC_LENGTH ) );
+
+        return ( suffix == expected );
+    }
+
+    /**
+     * Convenience: true iff the string has the token shape, regardless of
+     * whether the HMAC is verifiable. Used to decide whether to attempt
+     * restoration at all.
+     */
+    boolean function isTokenShape( required string candidate ) {
+        var match = reFind( variables.TOKEN_REGEX, arguments.candidate, 1, true );
+        return ( match.pos[ 1 ] == 1 && match.len[ 1 ] == len( arguments.candidate ) );
+    }
+
+    /**
+     * Generate a fresh per-run sessionKey. Mixes a UUID with a short-lived
+     * random HMAC to resist prediction across runs in the same JVM.
+     */
+    string function newSessionKey() {
+        var seed = createUUID() & ":" & getTickCount() & ":" & randRange( 0, 2147483647 );
+        return hmac( seed, createUUID(), "HmacSHA256" );
+    }
+
+}

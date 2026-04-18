@@ -1,0 +1,39 @@
+{
+    "_meta": {
+        "source"      : "custom (regex-only PII; Tier 1 NER deferred)",
+        "license"     : "bundled under Apache-2.0 per module license",
+        "lastUpdated" : "2026-04-17",
+        "caveat"      : "Regex-only PII is a floor, not a ceiling. Names, addresses, DOB, and medical IDs require NER — see DOCUMENTATION/07-future-work.md."
+    },
+    "patterns": [
+        {
+            "label"      : "PII_SSN",
+            "category"   : "pii",
+            "regex"      : "\\b\\d{3}-\\d{2}-\\d{4}\\b",
+            "confidence" : 0.9,
+            "description": "US Social Security Number (XXX-XX-XXXX)"
+        },
+        {
+            "label"      : "PII_CREDIT_CARD",
+            "category"   : "pii",
+            "regex"      : "\\b(?:\\d[ -]*?){13,19}\\b",
+            "validator"  : "luhn",
+            "confidence" : 0.92,
+            "description": "Credit card number (13-19 digits, Luhn-validated)"
+        },
+        {
+            "label"      : "PII_EMAIL",
+            "category"   : "pii",
+            "regex"      : "[A-Za-z0-9._%+\\-]+@[A-Za-z0-9.\\-]+\\.[A-Za-z]{2,}",
+            "confidence" : 0.9,
+            "description": "Email address"
+        },
+        {
+            "label"      : "PII_US_PHONE",
+            "category"   : "pii",
+            "regex"      : "(?:\\+?1[\\-. ])?\\(?\\d{3}\\)?[\\-. ]?\\d{3}[\\-. ]?\\d{4}",
+            "confidence" : 0.75,
+            "description": "US phone number (various common formats)"
+        }
+    ]
+}

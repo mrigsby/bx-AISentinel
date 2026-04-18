@@ -1,0 +1,137 @@
+/**
+ * TokenManifestSpec — unit tests for in-memory token storage + zero-on-release.
+ */
+class extends="testbox.system.BaseSpec" {
+
+    function run() {
+
+        describe( "TokenManifest.store() / get() / hasToken()", function() {
+
+            it( "round-trips a value through store → get", function() {
+                var m = new bxAiSentinel.models.TokenManifest();
+                m.store( "⟦SECRET:X:a1b2c3d4⟧", "super-secret-value" );
+                expect( m.get( "⟦SECRET:X:a1b2c3d4⟧" ) ).toBe( "super-secret-value" );
+            } );
+
+            it( "reports hasToken() correctly before and after store", function() {
+                var m = new bxAiSentinel.models.TokenManifest();
+                expect( m.hasToken( "⟦SECRET:X:a1b2c3d4⟧" ) ).toBeFalse();
+                m.store( "⟦SECRET:X:a1b2c3d4⟧", "value" );
+                expect( m.hasToken( "⟦SECRET:X:a1b2c3d4⟧" ) ).toBeTrue();
+            } );
+
+            it( "returns empty string for an unknown token", function() {
+                var m = new bxAiSentinel.models.TokenManifest();
+                expect( m.get( "nope" ) ).toBe( "" );
+            } );
+
+            it( "replacing an existing token zeroes the prior char[]", function() {
+                var m     = new bxAiSentinel.models.TokenManifest();
+                var token = "⟦SECRET:X:a1b2c3d4⟧";
+                m.store( token, "first-value" );
+                var priorArray = m._getRawArray( token );
+                m.store( token, "second-value" );
+
+                // prior array reference should have been zeroed before replacement
+                for ( var i = 1; i <= arrayLen( priorArray ); i++ ) {
+                    expect( javaCast( "string", priorArray[ i ] ) ).toBe( char( 0 ) );
+                }
+
+                expect( m.get( token ) ).toBe( "second-value" );
+            } );
+
+        } );
+
+        describe( "TokenManifest.size() / tokens()", function() {
+
+            it( "reflects the number of stored entries", function() {
+                var m = new bxAiSentinel.models.TokenManifest();
+                expect( m.size() ).toBe( 0 );
+                m.store( "t1", "v1" );
+                m.store( "t2", "v2" );
+                expect( m.size() ).toBe( 2 );
+                expect( m.tokens() ).toHaveLength( 2 );
+            } );
+
+        } );
+
+        describe( "TokenManifest.remove()", function() {
+
+            it( "zeroes the backing char[] and removes the entry", function() {
+                var m     = new bxAiSentinel.models.TokenManifest();
+                var token = "⟦SECRET:X:a1b2c3d4⟧";
+                m.store( token, "hello" );
+                var raw = m._getRawArray( token );
+
+                m.remove( token );
+
+                expect( m.hasToken( token ) ).toBeFalse();
+                expect( m.size() ).toBe( 0 );
+
+                // Underlying array was zeroed in place
+                for ( var i = 1; i <= arrayLen( raw ); i++ ) {
+                    expect( javaCast( "string", raw[ i ] ) ).toBe( char( 0 ) );
+                }
+            } );
+
+            it( "is a no-op for an unknown token", function() {
+                var m = new bxAiSentinel.models.TokenManifest();
+                m.remove( "nope" );
+                expect( m.size() ).toBe( 0 );
+            } );
+
+        } );
+
+        describe( "TokenManifest.zeroAll()", function() {
+
+            it( "zeroes every backing char[] and clears the map", function() {
+                var m = new bxAiSentinel.models.TokenManifest();
+                m.store( "t1", "alpha" );
+                m.store( "t2", "bravo" );
+                var raw1 = m._getRawArray( "t1" );
+                var raw2 = m._getRawArray( "t2" );
+
+                m.zeroAll();
+
+                expect( m.size() ).toBe( 0 );
+                expect( m.hasToken( "t1" ) ).toBeFalse();
+                expect( m.hasToken( "t2" ) ).toBeFalse();
+
+                for ( var i = 1; i <= arrayLen( raw1 ); i++ ) {
+                    expect( javaCast( "string", raw1[ i ] ) ).toBe( char( 0 ) );
+                }
+                for ( var i = 1; i <= arrayLen( raw2 ); i++ ) {
+                    expect( javaCast( "string", raw2[ i ] ) ).toBe( char( 0 ) );
+                }
+            } );
+
+            it( "is safe to call on an empty manifest", function() {
+                var m = new bxAiSentinel.models.TokenManifest();
+                m.zeroAll();
+                expect( m.size() ).toBe( 0 );
+            } );
+
+        } );
+
+        describe( "end-to-end with Tokenizer", function() {
+
+            it( "mint → store → get → zeroAll leaves the manifest empty", function() {
+                var tokenizer = new bxAiSentinel.models.Tokenizer();
+                var manifest  = new bxAiSentinel.models.TokenManifest();
+                var key       = tokenizer.newSessionKey();
+
+                var token = tokenizer.mint( "AWS_ACCESS_KEY", "AKIAIOSFODNN7EXAMPLE", key );
+                manifest.store( token, "AKIAIOSFODNN7EXAMPLE" );
+
+                expect( manifest.get( token ) ).toBe( "AKIAIOSFODNN7EXAMPLE" );
+                expect( tokenizer.verify( token, manifest.get( token ), key ) ).toBeTrue();
+
+                manifest.zeroAll();
+                expect( manifest.size() ).toBe( 0 );
+            } );
+
+        } );
+
+    }
+
+}

@@ -1,0 +1,67 @@
+/**
+ * bx-AISentinel — BoxLang AI Sentinel Middleware
+ *
+ * Drops into any BoxLang AI agent as middleware. Scans outbound LLM messages
+ * and tool-call args for secrets/PII, replaces them with HMAC-signed tokens,
+ * and restores the originals on the inbound response.
+ *
+ * See DOCUMENTATION/ for the full plan, threat model, and detection catalog.
+ */
+class {
+
+    property name="moduleVersion" default="0.1.0";
+
+    this.title          = "BX AI Sentinel";
+    this.author         = "Ortus Solutions, Corp";
+    this.webURL         = "https://www.ortussolutions.com";
+    this.description    = "AI middleware for secret / credential / PII redaction with reversible tokenization.";
+    this.version        = "0.1.0";
+    this.cfmapping      = "bxAiSentinel";
+    this.modelNamespace = "bxaisentinel";
+    this.autoMapModels  = true;
+    // bx-ai is a BoxLang RUNTIME module (lives in .engine/boxlang/.../modules/bx-ai),
+    // not a ColdBox module, so it does NOT belong in this dependency list.
+    // ColdBox would fail to activate a module with that name here.
+    this.dependencies   = [];
+
+    /**
+     * Module settings. Mirror of `SentinelPolicy.getDefaults()` — keep this
+     * block and `models/policy/SentinelPolicy.bx::getDefaults()` in sync.
+     * `SentinelPolicy` is the authoritative resolver; this map exists so
+     * host apps can discover + override via `boxlang.json → modules.bx-aisentinel`.
+     */
+    function configure() {
+        settings = {
+            "entropyThreshold"       : 4.5,
+            "entropyMinLength"       : 20,
+            "requireMixedCharset"    : true,
+            "manifestScope"          : "run",
+            "failurePolicy"          : "pass-through",
+            "metricsEnabled"         : true,
+            "logWarningsOnUnsigned"  : true,
+            "categoriesEnabled"      : [
+                "cloud-keys",
+                "vendor-tokens",
+                "generic",
+                "pii",
+                "boxlang",
+                "entropy",
+                "registry"
+            ],
+            "enableRegistryDetector" : true,
+            "enableRegexDetector"    : true,
+            "enableEntropyDetector"  : true,
+            "registeredSecrets"      : [],
+            "customPatterns"         : [],
+            "auditLogFile"           : "bx-aisentinel",
+            "auditEnabled"           : true,
+            "explainTokensToLLM"     : true,
+            "tokenProtocolPath"      : ""
+        };
+    }
+
+    function onLoad() {}
+
+    function onUnload() {}
+
+}

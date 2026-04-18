@@ -1,0 +1,187 @@
+/**
+ * SentinelPolicySpec — config merge semantics across the four layers.
+ */
+class extends="testbox.system.BaseSpec" {
+
+    function beforeAll() {
+        variables.tmpDir = expandPath( "./.tmp-policy-specs" );
+        if ( !directoryExists( variables.tmpDir ) ) {
+            directoryCreate( variables.tmpDir );
+        }
+    }
+
+    function afterAll() {
+        if ( directoryExists( variables.tmpDir ) ) {
+            directoryDelete( variables.tmpDir, true );
+        }
+    }
+
+    function run() {
+
+        describe( "SentinelPolicy defaults", function() {
+
+            it( "returns a populated defaults struct", function() {
+                var p = new bxAiSentinel.models.policy.SentinelPolicy();
+                var defaults = p.getDefaults();
+
+                expect( defaults.entropyThreshold ).toBe( 4.5 );
+                expect( defaults.manifestScope ).toBe( "run" );
+                expect( defaults.failurePolicy ).toBe( "pass-through" );
+                expect( defaults.metricsEnabled ).toBeTrue();
+                expect( defaults.categoriesEnabled ).toBeArray();
+            } );
+
+            it( "exposes convenience accessors for common settings", function() {
+                var p = new bxAiSentinel.models.policy.SentinelPolicy();
+
+                expect( p.getEntropyThreshold() ).toBe( 4.5 );
+                expect( p.getManifestScope() ).toBe( "run" );
+                expect( p.isMetricsEnabled() ).toBeTrue();
+                expect( p.isRegexDetectorEnabled() ).toBeTrue();
+                expect( p.isCategoryEnabled( "pii" ) ).toBeTrue();
+            } );
+
+        } );
+
+        describe( "SentinelPolicy constructor overrides", function() {
+
+            it( "accepts scalar overrides", function() {
+                var p = new bxAiSentinel.models.policy.SentinelPolicy( overrides: {
+                    "entropyThreshold" : 6.5,
+                    "manifestScope"    : "conversation"
+                } );
+
+                expect( p.getEntropyThreshold() ).toBe( 6.5 );
+                expect( p.getManifestScope() ).toBe( "conversation" );
+            } );
+
+            it( "replaces scalar defaults with overrides", function() {
+                var p = new bxAiSentinel.models.policy.SentinelPolicy( overrides: {
+                    "categoriesEnabled" : [ "pii" ]
+                } );
+
+                expect( p.getEnabledCategories() ).toBe( [ "pii" ] );
+                expect( p.isCategoryEnabled( "pii" ) ).toBeTrue();
+                expect( p.isCategoryEnabled( "cloud-keys" ) ).toBeFalse();
+            } );
+
+            it( "appends registeredSecrets rather than replacing", function() {
+                // First layer (defaults): empty array
+                // Override: adds two
+                var p = new bxAiSentinel.models.policy.SentinelPolicy( overrides: {
+                    "registeredSecrets" : [
+                        { "label": "A", "value": "one" },
+                        { "label": "B", "value": "two" }
+                    ]
+                } );
+
+                expect( p.getRegisteredSecrets() ).toHaveLength( 2 );
+            } );
+
+        } );
+
+        describe( "SentinelPolicy reading boxlang.json", function() {
+
+            it( "merges the bxSentinel key from boxlang.json", function() {
+                var path = variables.tmpDir & "/boxlang.json";
+                fileWrite( path, jsonSerialize( {
+                    "bxSentinel" : {
+                        "entropyThreshold" : 5.5,
+                        "manifestScope"    : "conversation"
+                    }
+                } ) );
+
+                var p = new bxAiSentinel.models.policy.SentinelPolicy( boxlangJsonPath: path );
+                expect( p.getEntropyThreshold() ).toBe( 5.5 );
+                expect( p.getManifestScope() ).toBe( "conversation" );
+                expect( p.getSourceReport().boxlangJsonLoaded ).toBeTrue();
+            } );
+
+            it( "also accepts the modules.bx-aisentinel section", function() {
+                var path = variables.tmpDir & "/boxlang-modules.json";
+                fileWrite( path, jsonSerialize( {
+                    "modules" : {
+                        "bx-aisentinel" : { "entropyThreshold" : 3.5 }
+                    }
+                } ) );
+
+                var p = new bxAiSentinel.models.policy.SentinelPolicy( boxlangJsonPath: path );
+                expect( p.getEntropyThreshold() ).toBe( 3.5 );
+            } );
+
+            it( "is tolerant of a missing or malformed boxlang.json", function() {
+                var p = new bxAiSentinel.models.policy.SentinelPolicy( boxlangJsonPath: "/path/that/does/not/exist.json" );
+                expect( p.getSourceReport().boxlangJsonLoaded ).toBeFalse();
+                expect( p.getEntropyThreshold() ).toBe( 4.5 );
+            } );
+
+        } );
+
+        describe( "SentinelPolicy reading .sentinel.json", function() {
+
+            it( "merges .sentinel.json on top of boxlang.json", function() {
+                var bxPath = variables.tmpDir & "/bx-l1.json";
+                var sjPath = variables.tmpDir & "/.sentinel-l1.json";
+                fileWrite( bxPath, jsonSerialize( { "bxSentinel" : { "entropyThreshold" : 5.0, "manifestScope" : "run" } } ) );
+                fileWrite( sjPath, jsonSerialize( { "entropyThreshold" : 6.0 } ) );
+
+                var p = new bxAiSentinel.models.policy.SentinelPolicy(
+                    boxlangJsonPath  : bxPath,
+                    sentinelJsonPath : sjPath
+                );
+
+                expect( p.getEntropyThreshold() ).toBe( 6.0 );          // .sentinel.json wins
+                expect( p.getManifestScope() ).toBe( "run" );           // boxlang.json preserved
+                expect( p.getSourceReport().sentinelJsonLoaded ).toBeTrue();
+            } );
+
+        } );
+
+        describe( "SentinelPolicy precedence order (layer 4 > 3 > 2 > 1)", function() {
+
+            it( "overrides beat .sentinel.json beats boxlang.json beats defaults", function() {
+                var bxPath = variables.tmpDir & "/bx-prec.json";
+                var sjPath = variables.tmpDir & "/sj-prec.json";
+                fileWrite( bxPath, jsonSerialize( { "bxSentinel" : { "entropyThreshold" : 5.0 } } ) );
+                fileWrite( sjPath, jsonSerialize( { "entropyThreshold" : 6.0 } ) );
+
+                var p = new bxAiSentinel.models.policy.SentinelPolicy(
+                    overrides        : { "entropyThreshold": 7.0 },
+                    boxlangJsonPath  : bxPath,
+                    sentinelJsonPath : sjPath
+                );
+
+                expect( p.getEntropyThreshold() ).toBe( 7.0 );
+            } );
+
+            it( "appends registeredSecrets across all layers", function() {
+                var bxPath = variables.tmpDir & "/bx-sec.json";
+                var sjPath = variables.tmpDir & "/sj-sec.json";
+                fileWrite( bxPath, jsonSerialize( {
+                    "bxSentinel" : {
+                        "registeredSecrets" : [ { "label": "BX", "value": "bx-secret" } ]
+                    }
+                } ) );
+                fileWrite( sjPath, jsonSerialize( {
+                    "registeredSecrets" : [ { "label": "SJ", "value": "sj-secret" } ]
+                } ) );
+
+                var p = new bxAiSentinel.models.policy.SentinelPolicy(
+                    overrides        : { "registeredSecrets" : [ { "label": "CTOR", "value": "ctor-secret" } ] },
+                    boxlangJsonPath  : bxPath,
+                    sentinelJsonPath : sjPath
+                );
+
+                var all = p.getRegisteredSecrets();
+                expect( all ).toHaveLength( 3 );
+                var labels = all.map( e => e.label );
+                expect( labels ).toInclude( "BX" );
+                expect( labels ).toInclude( "SJ" );
+                expect( labels ).toInclude( "CTOR" );
+            } );
+
+        } );
+
+    }
+
+}

@@ -1,0 +1,160 @@
+/**
+ * PatternCatalogSpec — unit coverage for the bundled regex pattern loader.
+ *
+ * Exercises: construction defaults, JSON bundle loading, addPattern validation,
+ * category/label filtering, and the `filterByCategories` policy gate that
+ * prevents disabled categories from reaching RegexDetector.
+ */
+class extends="testbox.system.BaseSpec" {
+
+    function run() {
+
+        describe( "PatternCatalog — constructor", function() {
+
+            it( "starts with an empty pattern list", function() {
+                var c = new bxAiSentinel.models.catalog.PatternCatalog();
+                expect( c.size() ).toBe( 0 );
+                expect( c.getAll() ).toHaveLength( 0 );
+            } );
+
+            it( "accepts a custom patternsDir override", function() {
+                var c = new bxAiSentinel.models.catalog.PatternCatalog( patternsDir: "/no/such/path" );
+                // Silent no-op when directory doesn't exist.
+                c.loadBundled();
+                expect( c.size() ).toBe( 0 );
+            } );
+
+        } );
+
+        describe( "PatternCatalog.loadBundled()", function() {
+
+            it( "loads the module's shipped pattern bundles", function() {
+                var c = new bxAiSentinel.models.catalog.PatternCatalog().loadBundled();
+                expect( c.size() ).toBeGT( 0 );
+            } );
+
+            it( "is a no-op when the patterns directory does not exist", function() {
+                var c = new bxAiSentinel.models.catalog.PatternCatalog( patternsDir: "/definitely/missing/dir" );
+                var returned = c.loadBundled();
+                expect( returned.size() ).toBe( 0 );
+            } );
+
+            it( "covers the expected top-level categories after loading the bundle", function() {
+                var c = new bxAiSentinel.models.catalog.PatternCatalog().loadBundled();
+                // The module ships at least these category buckets. Use toBeGTE so
+                // adding new bundles later doesn't break the test.
+                expect( arrayLen( c.getByCategory( "cloud-keys"    ) ) ).toBeGTE( 1 );
+                expect( arrayLen( c.getByCategory( "pii"           ) ) ).toBeGTE( 1 );
+                expect( arrayLen( c.getByCategory( "vendor-tokens" ) ) ).toBeGTE( 1 );
+            } );
+
+        } );
+
+        describe( "PatternCatalog.loadFile()", function() {
+
+            it( "is a no-op when the file does not exist", function() {
+                var c = new bxAiSentinel.models.catalog.PatternCatalog();
+                var returned = c.loadFile( "/nope/missing.json" );
+                expect( returned.size() ).toBe( 0 );
+            } );
+
+        } );
+
+        describe( "PatternCatalog.addPattern()", function() {
+
+            it( "accepts a minimal { label, regex } pattern", function() {
+                var c = new bxAiSentinel.models.catalog.PatternCatalog();
+                c.addPattern( { "label": "CUSTOM", "regex": "[A-Z]{4}" } );
+                expect( c.size() ).toBe( 1 );
+            } );
+
+            it( "fills sensible defaults for omitted fields", function() {
+                var c = new bxAiSentinel.models.catalog.PatternCatalog();
+                c.addPattern( { "label": "X", "regex": "abc" } );
+
+                var p = c.getAll()[ 1 ];
+                expect( p.category    ).toBe( "custom" );
+                expect( p.confidence  ).toBe( 0.9 );
+                expect( p.description ).toBe( "" );
+                expect( p.validator   ).toBe( "" );
+            } );
+
+            it( "silently skips a pattern missing the required `label` key", function() {
+                var c = new bxAiSentinel.models.catalog.PatternCatalog();
+                c.addPattern( { "regex": "abc" } );
+                expect( c.size() ).toBe( 0 );
+            } );
+
+            it( "silently skips a pattern missing the required `regex` key", function() {
+                var c = new bxAiSentinel.models.catalog.PatternCatalog();
+                c.addPattern( { "label": "NO_REGEX" } );
+                expect( c.size() ).toBe( 0 );
+            } );
+
+        } );
+
+        describe( "PatternCatalog.filterByCategories()", function() {
+
+            it( "keeps only patterns whose category is in the allowed list", function() {
+                var c = new bxAiSentinel.models.catalog.PatternCatalog();
+                c.addPattern( { "label": "AWS",  "regex": "AKIA.*", "category": "cloud-keys"    } );
+                c.addPattern( { "label": "SSN",  "regex": "\d{3}.", "category": "pii"           } );
+                c.addPattern( { "label": "GH",   "regex": "ghp_.*", "category": "vendor-tokens" } );
+
+                c.filterByCategories( [ "pii", "vendor-tokens" ] );
+                expect( c.size() ).toBe( 2 );
+                expect( arrayLen( c.getByCategory( "cloud-keys" ) ) ).toBe( 0 );
+            } );
+
+            it( "empties the catalog when none of the active patterns are in the allowed list", function() {
+                var c = new bxAiSentinel.models.catalog.PatternCatalog();
+                c.addPattern( { "label": "X", "regex": ".", "category": "a" } );
+                c.addPattern( { "label": "Y", "regex": ".", "category": "b" } );
+
+                c.filterByCategories( [ "not-a-match" ] );
+                expect( c.size() ).toBe( 0 );
+            } );
+
+        } );
+
+        describe( "PatternCatalog.getByCategory() / getByLabel()", function() {
+
+            it( "returns only patterns matching the requested category", function() {
+                var c = new bxAiSentinel.models.catalog.PatternCatalog();
+                c.addPattern( { "label": "A", "regex": ".", "category": "cat-1" } );
+                c.addPattern( { "label": "B", "regex": ".", "category": "cat-2" } );
+                c.addPattern( { "label": "C", "regex": ".", "category": "cat-1" } );
+
+                expect( arrayLen( c.getByCategory( "cat-1" ) ) ).toBe( 2 );
+                expect( arrayLen( c.getByCategory( "cat-2" ) ) ).toBe( 1 );
+                expect( arrayLen( c.getByCategory( "cat-nope" ) ) ).toBe( 0 );
+            } );
+
+            it( "returns only patterns matching the requested label", function() {
+                var c = new bxAiSentinel.models.catalog.PatternCatalog();
+                c.addPattern( { "label": "FOO", "regex": "." } );
+                c.addPattern( { "label": "BAR", "regex": "." } );
+
+                expect( arrayLen( c.getByLabel( "FOO" ) ) ).toBe( 1 );
+                expect( arrayLen( c.getByLabel( "BAZ" ) ) ).toBe( 0 );
+            } );
+
+        } );
+
+        describe( "PatternCatalog.clear()", function() {
+
+            it( "empties the catalog", function() {
+                var c = new bxAiSentinel.models.catalog.PatternCatalog();
+                c.addPattern( { "label": "A", "regex": "." } );
+                c.addPattern( { "label": "B", "regex": "." } );
+                expect( c.size() ).toBe( 2 );
+
+                c.clear();
+                expect( c.size() ).toBe( 0 );
+            } );
+
+        } );
+
+    }
+
+}

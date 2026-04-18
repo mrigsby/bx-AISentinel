@@ -1,0 +1,551 @@
+/**
+ * AiSentinelMiddleware — the bx-ai middleware adapter.
+ *
+ * Implements the six bx-ai lifecycle hooks and dispatches the real work into
+ * `SentinelCore`. Each hook is timed; timings land on `context.metadata.sentinel.metrics`
+ * and on a cached last-run struct retrievable via `getLastRunMetrics()`.
+ *
+ * When used outside bx-ai (unit / integration tests for the core), instantiate
+ * `SentinelCore` directly.
+ *
+ * This class is expected to extend `bxModules.bxai.models.middleware.BaseAiMiddleware`
+ * when deployed into a bx-ai agent. In this dev tree we do NOT declare the
+ * `extends` attribute so the file remains loadable without a bx-ai checkout —
+ * add `extends="bxModules.bxai.models.middleware.BaseAiMiddleware"` as a
+ * superclass prior to publishing, or subclass this in the host project if
+ * your bx-ai version expects the explicit inheritance.
+ */
+class {
+
+    property name="name"            type="string"  default="AiSentinelMiddleware";
+    property name="description"     type="string"  default="Redacts secrets / PII before LLM calls and restores on return.";
+    property name="core"            type="any";
+    property name="auditor"         type="any";
+    property name="policy"          type="any";
+    property name="manifestScope"   type="string"  default="run";
+    property name="metricsEnabled"  type="boolean" default="true";
+    property name="enabled"         type="boolean" default="true";
+    property name="explainTokensToLLM" type="boolean" default="true";
+    property name="tokenProtocolContent" type="string" default="";
+    property name="lastRunMetrics"  type="struct";
+    property name="persistentRunContext" type="any";
+
+    function init( struct settings = {} ) {
+        variables.name        = "AiSentinelMiddleware";
+        variables.description = "Redacts secrets / PII before LLM calls and restores on return.";
+        variables.lastRunMetrics = {};
+        variables.persistentRunContext = javaCast( "null", "" );
+
+        // Resolve the effective policy: defaults → boxlang.json → .sentinel.json → constructor overrides
+        variables.policy = structKeyExists( arguments.settings, "policy" )
+            ? arguments.settings.policy
+            : new policy.SentinelPolicy(
+                overrides        : arguments.settings,
+                boxlangJsonPath  : arguments.settings.boxlangJsonPath  ?: "",
+                sentinelJsonPath : arguments.settings.sentinelJsonPath ?: ""
+            );
+
+        variables.manifestScope     = variables.policy.getManifestScope();
+        variables.metricsEnabled    = variables.policy.isMetricsEnabled();
+        variables.enabled           = arguments.settings.enabled ?: true;
+        variables.explainTokensToLLM = ( structKeyExists( arguments.settings, "explainTokensToLLM" )
+            ? arguments.settings.explainTokensToLLM
+            : variables.policy.isTokenCoachingEnabled() );
+        variables.tokenProtocolContent = _loadTokenProtocol( variables.policy.getTokenProtocolPath() );
+
+        // Host apps can inject a pre-built core for testing / advanced use.
+        if ( structKeyExists( arguments.settings, "core" ) ) {
+            variables.core    = arguments.settings.core;
+            variables.auditor = arguments.settings.auditor
+                ?: new SentinelAuditor(
+                    logFile : variables.policy.getAuditLogFile(),
+                    enabled : variables.policy.isAuditEnabled()
+                );
+            return this;
+        }
+
+        variables.auditor = arguments.settings.auditor
+            ?: new SentinelAuditor(
+                logFile : variables.policy.getAuditLogFile(),
+                enabled : variables.policy.isAuditEnabled()
+            );
+
+        variables.core = _composeCore( variables.policy, variables.auditor );
+
+        return this;
+    }
+
+    /**
+     * Build a SentinelCore from the resolved policy. Public for hosts that
+     * want to rebuild components after mutating policy at runtime.
+     */
+    function _composeCore( required any policy, required any auditor ) {
+        var tokenizer = new Tokenizer();
+        var catalog   = new catalog.PatternCatalog().loadBundled();
+
+        // Drop patterns whose category is disabled.
+        catalog.filterByCategories( arguments.policy.getEnabledCategories() );
+
+        // Merge any user-supplied custom patterns into the catalog.
+        for ( var custom in arguments.policy.getCustomPatterns() ) {
+            catalog.addPattern( custom );
+        }
+
+        var detectors = [];
+
+        if ( arguments.policy.isRegistryDetectorEnabled() ) {
+            detectors.append( new detectors.RegistryDetector( secrets: arguments.policy.getRegisteredSecrets() ) );
+        }
+        if ( arguments.policy.isRegexDetectorEnabled() ) {
+            detectors.append( new detectors.RegexDetector( catalog: catalog ) );
+        }
+        if ( arguments.policy.isEntropyDetectorEnabled() && arguments.policy.isCategoryEnabled( "entropy" ) ) {
+            detectors.append(
+                new detectors.EntropyDetector(
+                    minLength           : arguments.policy.getEntropyMinLength(),
+                    threshold           : arguments.policy.getEntropyThreshold(),
+                    requireMixedCharset : arguments.policy.requiresMixedCharset()
+                )
+            );
+        }
+
+        var engine = new DetectionEngine( detectors: detectors );
+
+        return new SentinelCore(
+            tokenizer       : tokenizer,
+            detectionEngine : engine,
+            auditor         : arguments.auditor
+        );
+    }
+
+    /**
+     * Read-only access to the resolved policy — useful for diagnostics + demo UI.
+     */
+    function getPolicy() {
+        return variables.policy;
+    }
+
+    /**
+     * Runtime enable / disable. When disabled, every hook short-circuits to
+     * proceed() without doing any redaction, restoration, or metric capture.
+     * Lets a host UI (the demo's Sentinel toggle) flip behavior without
+     * rebuilding the agent.
+     */
+    function setEnabled( required boolean enabled ) {
+        variables.enabled = arguments.enabled;
+        return this;
+    }
+
+    boolean function isEnabled() {
+        return variables.enabled;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // bx-ai lifecycle hooks
+    // ─────────────────────────────────────────────────────────────────────
+
+    function beforeAgentRun( required struct context ) {
+        if ( !variables.enabled ) return _proceed();
+
+        if ( !structKeyExists( arguments.context, "metadata" ) ) {
+            arguments.context.metadata = {};
+        }
+
+        var runCtx = _getOrCreateRunContext();
+        arguments.context.metadata.sentinel = runCtx;
+
+        return _proceed();
+    }
+
+    /**
+     * bx-ai 3.x contract for beforeLLMCall:
+     *   context = { chatRequest, dataPacket }
+     * dataPacket is the payload going on the wire to the provider — shape
+     * matches OpenAI: `{ model, messages: [ { role, content } ], ... }`.
+     *
+     * We redact `dataPacket.messages[].content` in place so the provider
+     * never sees plaintext. bx-ai doesn't share state across hooks, so we
+     * hold `runCtx` on the middleware instance (variables.persistentRunContext).
+     */
+    function beforeLLMCall( required struct context ) {
+        if ( !variables.enabled ) return _proceed();
+
+        var runCtx = _resolveRunContext( arguments.context );
+        var start  = getTickCount();
+
+        var messages = _extractMessagesFromContext( arguments.context );
+        if ( isArray( messages ) ) {
+            for ( var msg in messages ) {
+                if ( structKeyExists( msg, "content" ) && isSimpleValue( msg.content ) ) {
+                    msg.content = variables.core.redact( msg.content, runCtx );
+                }
+            }
+
+            // Inject the token-protocol system message only when the outbound
+            // payload actually contains at least one ⟦SECRET:...⟧ placeholder.
+            // This covers:
+            //   - tokens minted this turn (just redacted above)
+            //   - tokens pulled in from earlier turns via aiMemory
+            // and skips the ~80-token overhead on plain non-sensitive chat.
+            var coachingApplied = false;
+            if ( variables.explainTokensToLLM
+                 && len( variables.tokenProtocolContent )
+                 && _messagesContainTokens( messages ) ) {
+                _injectTokenProtocol( messages );
+                coachingApplied = true;
+            }
+        }
+
+        // Snapshot of what the LLM is about to see — after redaction + (maybe) injection.
+        runCtx.metrics.lastTokenizedMessages = isArray( messages ) ? duplicate( messages ) : [];
+        runCtx.metrics.tokenCoachingApplied  = ( coachingApplied ?: false );
+
+        var elapsed = getTickCount() - start;
+        runCtx.metrics.outboundMs    += elapsed;
+        runCtx.metrics.lastOutboundMs = elapsed;
+        runCtx.metrics.lastLlmStart   = getTickCount();
+
+        // Keep runCtx alive across hooks via the instance.
+        variables.persistentRunContext = runCtx;
+        variables.lastRunMetrics       = duplicate( runCtx.metrics );
+
+        return _proceed();
+    }
+
+    /**
+     * bx-ai 3.x contract for afterLLMCall:
+     *   context = { chatRequest, result }
+     * `result` is the parsed response struct (OpenAI-shape: choices/message/content).
+     * We restore tokens in place so the caller sees plaintext.
+     */
+    function afterLLMCall( required struct context ) {
+        if ( !variables.enabled ) return _proceed();
+
+        var runCtx = _resolveRunContext( arguments.context );
+        var start  = getTickCount();
+
+        if ( structKeyExists( runCtx.metrics, "lastLlmStart" ) ) {
+            runCtx.metrics.llmRoundtripMs = start - runCtx.metrics.lastLlmStart;
+        }
+
+        if ( structKeyExists( arguments.context, "result" ) ) {
+            runCtx.metrics.lastRawResponse = duplicate( arguments.context.result );
+            arguments.context.result = _restoreResponseShape( arguments.context.result, runCtx );
+        }
+        // Also handle the older "response" key in case a provider uses it.
+        else if ( structKeyExists( arguments.context, "response" ) ) {
+            runCtx.metrics.lastRawResponse = duplicate( arguments.context.response );
+            arguments.context.response = _restoreResponseShape( arguments.context.response, runCtx );
+        }
+
+        var elapsed = getTickCount() - start;
+        runCtx.metrics.inboundMs    += elapsed;
+        runCtx.metrics.lastInboundMs = elapsed;
+
+        // Mirror final state to the public metrics snapshot so the demo UI
+        // can read it even if afterAgentRun doesn't fire for this flow.
+        variables.lastRunMetrics = duplicate( runCtx.metrics );
+
+        return _proceed();
+    }
+
+    /**
+     * Load the token-protocol markdown that ships with the module. Host apps
+     * can override via `policy.tokenProtocolPath` if they want their own copy.
+     * Falls back to a short built-in default if the file can't be read — the
+     * module should never silently produce an empty protocol.
+     */
+    private string function _loadTokenProtocol( string overridePath = "" ) {
+        var candidates = [];
+        if ( len( arguments.overridePath ) ) {
+            candidates.append( arguments.overridePath );
+        }
+        // The module's bundled copy.
+        try {
+            candidates.append( expandPath( "/bxAiSentinel/includes/token-protocol.md" ) );
+        } catch ( any e ) {}
+        try {
+            candidates.append(
+                getDirectoryFromPath( getCurrentTemplatePath() ) & "../includes/token-protocol.md"
+            );
+        } catch ( any e ) {}
+
+        for ( var path in candidates ) {
+            try {
+                if ( len( path ) && fileExists( path ) ) {
+                    return fileRead( path );
+                }
+            } catch ( any e ) {}
+        }
+
+        // Fallback — minimal protocol so the module always works.
+        return "When you see placeholders of the form ⟦SECRET:LABEL:hmac8⟧ in a message, treat them as opaque tokens that stand in for real sensitive values the user has redacted. Copy them verbatim in any response — do not modify, paraphrase, or guess at the underlying value.";
+    }
+
+    /**
+     * True iff any message.content in the outbound payload contains a
+     * Sentinel token shape. Used to gate token-coaching injection so plain
+     * non-sensitive chat doesn't eat context window.
+     */
+    private boolean function _messagesContainTokens( required array messages ) {
+        var marker = char( 10214 ) & "SECRET:";
+        for ( var msg in arguments.messages ) {
+            if ( isStruct( msg )
+                 && structKeyExists( msg, "content" )
+                 && isSimpleValue( msg.content )
+                 && find( marker, msg.content ) > 0 ) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Insert the token-protocol content into the outbound message stream so
+     * the LLM sees it as part of its system context. If an existing system
+     * message is present, append to it with a separator (bx-ai / LLM best
+     * practice is one system message per conversation). Otherwise prepend a
+     * new one.
+     */
+    private function _injectTokenProtocol( required array messages ) {
+        var protocolHeader = char( 10 ) & char( 10 ) & "---" & char( 10 ) & "## bx-AISentinel token protocol" & char( 10 ) & char( 10 );
+        var injection      = protocolHeader & variables.tokenProtocolContent;
+
+        if ( arrayLen( arguments.messages ) > 0
+             && isStruct( arguments.messages[ 1 ] )
+             && ( arguments.messages[ 1 ].role ?: "" ) == "system"
+             && isSimpleValue( arguments.messages[ 1 ].content ?: "" ) ) {
+            arguments.messages[ 1 ].content = arguments.messages[ 1 ].content & injection;
+            return;
+        }
+
+        arguments.messages.prepend( {
+            "role"    : "system",
+            "content" : variables.tokenProtocolContent
+        } );
+    }
+
+    /**
+     * Runtime toggle for token coaching. Flipping this doesn't need a
+     * rebuild — next beforeLLMCall respects the new value.
+     */
+    function setExplainTokensToLLM( required boolean enabled ) {
+        variables.explainTokensToLLM = arguments.enabled;
+        return this;
+    }
+
+    boolean function isExplainTokensToLLMEnabled() {
+        return variables.explainTokensToLLM;
+    }
+
+    /**
+     * Extract the outbound messages array from whichever key bx-ai happens to
+     * pass it in. Supports:
+     *   context.dataPacket.messages   — bx-ai 3.x OpenAI-compatible providers
+     *   context.messages              — older / documented shape
+     */
+    private any function _extractMessagesFromContext( required struct context ) {
+        if ( structKeyExists( arguments.context, "dataPacket" )
+             && isStruct( arguments.context.dataPacket )
+             && structKeyExists( arguments.context.dataPacket, "messages" )
+             && isArray( arguments.context.dataPacket.messages ) ) {
+            return arguments.context.dataPacket.messages;
+        }
+        if ( structKeyExists( arguments.context, "messages" )
+             && isArray( arguments.context.messages ) ) {
+            return arguments.context.messages;
+        }
+        return javaCast( "null", "" );
+    }
+
+    function beforeToolCall( required struct context ) {
+        if ( !variables.enabled ) return _proceed();
+
+        var runCtx = _resolveRunContext( arguments.context );
+        var start  = getTickCount();
+
+        if ( structKeyExists( arguments.context, "toolArgs" ) ) {
+            arguments.context.toolArgs = variables.core.redactStructure( arguments.context.toolArgs, runCtx );
+        }
+
+        var elapsed = getTickCount() - start;
+        runCtx.metrics.toolRedactMs += elapsed;
+
+        return _proceed();
+    }
+
+    function afterToolCall( required struct context ) {
+        if ( !variables.enabled ) return _proceed();
+
+        var runCtx = _resolveRunContext( arguments.context );
+        var start  = getTickCount();
+
+        if ( structKeyExists( arguments.context, "result" ) ) {
+            arguments.context.result = variables.core.restoreStructure( arguments.context.result, runCtx );
+        }
+
+        var elapsed = getTickCount() - start;
+        runCtx.metrics.toolRestoreMs += elapsed;
+
+        return _proceed();
+    }
+
+    /**
+     * Default pass-through wrap hooks — bx-ai 3.x invokes these around the
+     * actual LLM call / tool invocation. We don't need to intercept at the
+     * wrap layer (our before* / after* hooks already do the work), but we
+     * MUST implement these so the middleware contract is satisfied.
+     */
+    any function wrapLLMCall( required struct context, required function handler ) {
+        return arguments.handler();
+    }
+
+    any function wrapToolCall( required struct context, required function handler ) {
+        return arguments.handler();
+    }
+
+    function onError( required struct context ) {
+        return _proceed();
+    }
+
+    function afterAgentRun( required struct context ) {
+        if ( !variables.enabled ) return _proceed();
+
+        var runCtx = _resolveRunContext( arguments.context );
+
+        variables.lastRunMetrics = duplicate( runCtx.metrics );
+
+        if ( variables.metricsEnabled ) {
+            variables.auditor.runComplete( runCtx.metrics, runCtx.runId );
+        }
+
+        // Tear down only when manifest scope is per-run. Conversation scope
+        // keeps the manifest alive across multiple agent.run() invocations.
+        if ( variables.manifestScope == "run" ) {
+            variables.core.teardownRunContext( runCtx );
+            variables.persistentRunContext = javaCast( "null", "" );
+        }
+
+        return _proceed();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Public inspection API
+    // ─────────────────────────────────────────────────────────────────────
+
+    /**
+     * Returns the most recently completed run's metrics.
+     * Called by the CBWire chat UI to render the per-reply timing badge.
+     */
+    struct function getLastRunMetrics() {
+        return variables.lastRunMetrics;
+    }
+
+    /**
+     * Register a secret at runtime. Delegates into the RegistryDetector if
+     * one was composed into the pipeline.
+     */
+    function registerSecret(
+        required string label,
+        required string value,
+                 string category = "registry"
+    ) {
+        for ( var d in variables.core.detectionEngine.getDetectors() ) {
+            if ( d.getSourceName() == "RegistryDetector" ) {
+                d.register( arguments.label, arguments.value, arguments.category );
+                break;
+            }
+        }
+        return this;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Internal helpers
+    // ─────────────────────────────────────────────────────────────────────
+
+    /**
+     * Resolve the per-run context — either from conversation-scoped persistent
+     * state, or by creating a new one if the host somehow called a mid-run
+     * hook without `beforeAgentRun` firing first.
+     */
+    private struct function _getOrCreateRunContext() {
+        if ( variables.manifestScope == "conversation" && !isNull( variables.persistentRunContext ) ) {
+            return variables.persistentRunContext;
+        }
+
+        var runCtx = variables.core.newRunContext();
+        if ( variables.manifestScope == "conversation" ) {
+            variables.persistentRunContext = runCtx;
+        }
+        return runCtx;
+    }
+
+    /**
+     * Fetch runCtx from the context struct, or synthesize one if missing
+     * (defensive — shouldn't happen if beforeAgentRun fired).
+     */
+    private struct function _resolveRunContext( required struct context ) {
+        if ( structKeyExists( arguments.context, "metadata" )
+             && structKeyExists( arguments.context.metadata, "sentinel" ) ) {
+            return arguments.context.metadata.sentinel;
+        }
+
+        if ( !structKeyExists( arguments.context, "metadata" ) ) {
+            arguments.context.metadata = {};
+        }
+        arguments.context.metadata.sentinel = _getOrCreateRunContext();
+        return arguments.context.metadata.sentinel;
+    }
+
+    /**
+     * Restore plaintext in whatever shape bx-ai hands us. The response may be:
+     *   - a plain string
+     *   - a struct with a .content key
+     *   - a struct with a .choices array (OpenAI-shape)
+     *   - a getContent()-style object
+     * Do the best we can to find text fields and restore them, leaving unknown
+     * fields untouched.
+     */
+    private any function _restoreResponseShape( required any response, required struct runCtx ) {
+        if ( isSimpleValue( arguments.response ) ) {
+            return variables.core.restore( arguments.response, arguments.runCtx );
+        }
+
+        if ( isStruct( arguments.response ) ) {
+            if ( structKeyExists( arguments.response, "content" ) && isSimpleValue( arguments.response.content ) ) {
+                arguments.response.content = variables.core.restore( arguments.response.content, arguments.runCtx );
+            }
+
+            if ( structKeyExists( arguments.response, "choices" ) && isArray( arguments.response.choices ) ) {
+                for ( var choice in arguments.response.choices ) {
+                    if ( isStruct( choice ) && structKeyExists( choice, "message" )
+                         && isStruct( choice.message ) && structKeyExists( choice.message, "content" )
+                         && isSimpleValue( choice.message.content ) ) {
+                        choice.message.content = variables.core.restore( choice.message.content, arguments.runCtx );
+                    }
+                }
+            }
+        }
+
+        return arguments.response;
+    }
+
+    /**
+     * Return `AiMiddlewareResult.continue()` when bx-ai is on the classpath,
+     * otherwise a shape-compatible struct so the class stays testable without
+     * the module installed.
+     *
+     * Note: bx-ai 3.x exposes `continue` as a static factory on
+     * `bxModules.bxai.models.middleware.AiMiddlewareResult`. In BoxLang, static
+     * methods can be invoked via either `::` or `.` notation on the class ref.
+     */
+    private any function _proceed() {
+        try {
+            var resultClass = createObject( "component", "bxModules.bxai.models.middleware.AiMiddlewareResult" );
+            return resultClass.continue();
+        } catch ( any e ) {
+            return { "type": "continue" };
+        }
+    }
+
+}

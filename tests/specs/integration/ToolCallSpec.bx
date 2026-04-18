@@ -1,0 +1,209 @@
+/**
+ * ToolCallSpec — integration coverage for beforeToolCall / afterToolCall.
+ *
+ * Tool args + tool results can carry sensitive data that never traverses
+ * `messages`. These specs verify the recursive walker handles strings,
+ * structs, arrays, deep nesting, and preserves non-string types.
+ */
+class extends="testbox.system.BaseSpec" {
+
+    function run() {
+
+        describe( "beforeToolCall — recursive redaction of toolArgs", function() {
+
+            it( "redacts a flat struct of string args", function() {
+                var mw  = new bxAiSentinel.models.AiSentinelMiddleware();
+                var ctx = {
+                    "metadata" : {},
+                    "toolName" : "queryDb",
+                    "toolArgs" : {
+                        "connection" : "postgres://admin:p4ssw0rd@db.example.com:5432/prod",
+                        "query"      : "select * from users where email = 'alice@example.com'"
+                    }
+                };
+
+                mw.beforeAgentRun( ctx );
+                mw.beforeToolCall( ctx );
+
+                expect( ctx.toolArgs.connection ).notToInclude( "p4ssw0rd" );
+                expect( ctx.toolArgs.connection ).notToInclude( "admin" );
+                expect( ctx.toolArgs.query ).notToInclude( "alice@example.com" );
+                expect( ctx.metadata.sentinel.metrics.toolRedactMs ).toBeGTE( 0 );
+            } );
+
+            it( "walks nested structs and arrays recursively", function() {
+                var mw  = new bxAiSentinel.models.AiSentinelMiddleware();
+                var ctx = {
+                    "metadata" : {},
+                    "toolName" : "sendEmail",
+                    "toolArgs" : {
+                        "recipients" : [ "alice@example.com", "bob@example.com" ],
+                        "headers"    : {
+                            "authorization" : "Bearer ghp_" & repeatString( "a", 36 ),
+                            "metadata"      : {
+                                "ticket" : "123-45-6789"
+                            }
+                        }
+                    }
+                };
+
+                mw.beforeAgentRun( ctx );
+                mw.beforeToolCall( ctx );
+
+                expect( ctx.toolArgs.recipients[ 1 ] ).notToInclude( "alice@example.com" );
+                expect( ctx.toolArgs.recipients[ 2 ] ).notToInclude( "bob@example.com" );
+                expect( ctx.toolArgs.headers.authorization ).notToInclude( "ghp_" );
+                expect( ctx.toolArgs.headers.metadata.ticket ).notToInclude( "123-45-6789" );
+
+                // Every array element is now a token (2 emails) + 1 GitHub PAT + 1 SSN = 4 hits.
+                expect( ctx.metadata.sentinel.metrics.tokensMinted ).toBeGTE( 4 );
+            } );
+
+            it( "preserves numeric and boolean types when no hits occur", function() {
+                var mw  = new bxAiSentinel.models.AiSentinelMiddleware();
+                var ctx = {
+                    "metadata" : {},
+                    "toolName" : "doThing",
+                    "toolArgs" : {
+                        "count"   : 42,
+                        "enabled" : true,
+                        "note"    : "no secrets here"
+                    }
+                };
+
+                mw.beforeAgentRun( ctx );
+                mw.beforeToolCall( ctx );
+
+                expect( isNumeric( ctx.toolArgs.count ) ).toBeTrue();
+                expect( isBoolean( ctx.toolArgs.enabled ) ).toBeTrue();
+                expect( ctx.toolArgs.note ).toBe( "no secrets here" );
+            } );
+
+            it( "handles empty toolArgs gracefully", function() {
+                var mw  = new bxAiSentinel.models.AiSentinelMiddleware();
+                var ctx = { "metadata": {}, "toolName": "noop", "toolArgs": {} };
+
+                mw.beforeAgentRun( ctx );
+                mw.beforeToolCall( ctx );
+
+                expect( ctx.toolArgs ).toBeEmpty();
+                expect( ctx.metadata.sentinel.metrics.toolRedactMs ).toBeGTE( 0 );
+            } );
+
+        } );
+
+        describe( "afterToolCall — recursive restoration of result", function() {
+
+            it( "restores tokens in a flat string result", function() {
+                var mw  = new bxAiSentinel.models.AiSentinelMiddleware();
+                var ctx = {
+                    "metadata" : {},
+                    "toolName" : "echo",
+                    "toolArgs" : { "payload" : "My AWS key is AKIAIOSFODNN7EXAMPLE" }
+                };
+
+                mw.beforeAgentRun( ctx );
+                mw.beforeToolCall( ctx );
+
+                // Simulate a tool that echoed its (now-tokenized) arg as a string result
+                ctx.result = "echoed: " & ctx.toolArgs.payload;
+
+                mw.afterToolCall( ctx );
+
+                expect( ctx.result ).toInclude( "AKIAIOSFODNN7EXAMPLE" );
+                expect( ctx.result ).notToInclude( char( 10214 ) );
+                expect( ctx.metadata.sentinel.metrics.toolRestoreMs ).toBeGTE( 0 );
+            } );
+
+            it( "restores tokens in a nested struct result", function() {
+                var mw  = new bxAiSentinel.models.AiSentinelMiddleware();
+                var ctx = {
+                    "metadata" : {},
+                    "toolName" : "queryDb",
+                    "toolArgs" : {
+                        "query" : "select * from users where ssn='123-45-6789'"
+                    }
+                };
+
+                mw.beforeAgentRun( ctx );
+                mw.beforeToolCall( ctx );
+
+                // Tool returns a struct containing the same (tokenized) query
+                ctx.result = {
+                    "status"   : "ok",
+                    "rowCount" : 1,
+                    "diagnostic" : {
+                        "echoed" : ctx.toolArgs.query
+                    }
+                };
+
+                mw.afterToolCall( ctx );
+
+                expect( ctx.result.diagnostic.echoed ).toInclude( "123-45-6789" );
+                expect( isNumeric( ctx.result.rowCount ) ).toBeTrue();
+            } );
+
+        } );
+
+        describe( "tool-call round-trip", function() {
+
+            it( "arg → tool → result preserves plaintext end-to-end while hiding it from the tool frame", function() {
+                var mw  = new bxAiSentinel.models.AiSentinelMiddleware();
+                var ctx = {
+                    "metadata" : {},
+                    "toolName" : "rotateKey",
+                    "toolArgs" : {
+                        "oldKey" : "AKIAIOSFODNN7EXAMPLE",
+                        "user"   : "admin@example.com"
+                    }
+                };
+
+                mw.beforeAgentRun( ctx );
+                mw.beforeToolCall( ctx );
+
+                // SECURITY CHECK: what the "tool" would see from the LLM is tokenized
+                expect( ctx.toolArgs.oldKey ).notToInclude( "AKIAIOSFODNN7EXAMPLE" );
+                expect( ctx.toolArgs.user ).notToInclude( "admin@example.com" );
+                expect( ctx.toolArgs.oldKey ).toInclude( char( 10214 ) & "SECRET:AWS_ACCESS_KEY:" );
+
+                // Host tool sees the tokens and echoes them in a status message
+                var statusTemplate = "rotated {oldKey} for user {user}";
+                ctx.result = replaceNoCase(
+                    replaceNoCase( statusTemplate, "{oldKey}", ctx.toolArgs.oldKey, "all" ),
+                    "{user}", ctx.toolArgs.user, "all"
+                );
+
+                mw.afterToolCall( ctx );
+
+                // SECURITY CHECK: the caller (and subsequent LLM calls) see plaintext
+                expect( ctx.result ).toInclude( "AKIAIOSFODNN7EXAMPLE" );
+                expect( ctx.result ).toInclude( "admin@example.com" );
+            } );
+
+            it( "cumulative timings reflect repeated tool invocations", function() {
+                var mw  = new bxAiSentinel.models.AiSentinelMiddleware();
+                var ctx = { "metadata": {}, "toolName": "t", "toolArgs": { "x": "alice@example.com" } };
+
+                mw.beforeAgentRun( ctx );
+                mw.beforeToolCall( ctx );
+                ctx.result = "ok";
+                mw.afterToolCall( ctx );
+
+                var firstRedact  = ctx.metadata.sentinel.metrics.toolRedactMs;
+                var firstRestore = ctx.metadata.sentinel.metrics.toolRestoreMs;
+
+                // Second tool call in the same run
+                ctx.toolArgs = { "y": "bob@example.com" };
+                mw.beforeToolCall( ctx );
+                ctx.result = "ok";
+                mw.afterToolCall( ctx );
+
+                expect( ctx.metadata.sentinel.metrics.toolRedactMs  ).toBeGTE( firstRedact  );
+                expect( ctx.metadata.sentinel.metrics.toolRestoreMs ).toBeGTE( firstRestore );
+            } );
+
+        } );
+
+    }
+
+}

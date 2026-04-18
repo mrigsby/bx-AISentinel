@@ -1,0 +1,24 @@
+/**
+ * TestBox harness application.
+ * Points cfmappings at the module root and at testbox so specs can resolve
+ * both `bxAiSentinel.models.*` and `testbox.system.BaseSpec`.
+ */
+class {
+
+    this.name                 = "bx-AISentinel-tests";
+    this.sessionManagement    = false;
+    this.setClientCookies     = false;
+    this.sessionTimeout       = createTimeSpan( 0, 0, 1, 0 );
+    this.applicationTimeout   = createTimeSpan( 0, 0, 5, 0 );
+
+    // Module root (one level above tests/)
+    this.mappings[ "/bxAiSentinel" ] = expandPath( "../" );
+    this.mappings[ "/tests" ]        = expandPath( "./" );
+
+    // TestBox — expected at the workbench level for development;
+    // host projects override as needed.
+    if ( directoryExists( expandPath( "../../testbox" ) ) ) {
+        this.mappings[ "/testbox" ] = expandPath( "../../testbox" );
+    }
+
+}

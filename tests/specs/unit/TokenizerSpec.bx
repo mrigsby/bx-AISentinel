@@ -1,0 +1,163 @@
+/**
+ * TokenizerSpec — unit tests for the Tokenizer wire-format owner.
+ */
+class extends="testbox.system.BaseSpec" {
+
+    function beforeAll() {
+        variables.tokenizer = new bxAiSentinel.models.Tokenizer();
+        variables.key       = variables.tokenizer.newSessionKey();
+    }
+
+    function run() {
+
+        describe( "Tokenizer.mint()", function() {
+
+            it( "produces a token matching the ⟦SECRET:LABEL:hmac8⟧ shape", function() {
+                var token = variables.tokenizer.mint(
+                    label      : "AWS_ACCESS_KEY",
+                    value      : "AKIAIOSFODNN7EXAMPLE",
+                    sessionKey : variables.key
+                );
+                expect( variables.tokenizer.isTokenShape( token ) ).toBeTrue();
+                expect( token ).toInclude( "SECRET:AWS_ACCESS_KEY:" );
+            } );
+
+            it( "is deterministic for the same (label, value, key)", function() {
+                var a = variables.tokenizer.mint( "AWS_ACCESS_KEY", "AKIAIOSFODNN7EXAMPLE", variables.key );
+                var b = variables.tokenizer.mint( "AWS_ACCESS_KEY", "AKIAIOSFODNN7EXAMPLE", variables.key );
+                expect( a ).toBe( b );
+            } );
+
+            it( "produces different tokens for different values", function() {
+                var a = variables.tokenizer.mint( "PII_EMAIL", "a@example.com", variables.key );
+                var b = variables.tokenizer.mint( "PII_EMAIL", "b@example.com", variables.key );
+                expect( a ).notToBe( b );
+            } );
+
+            it( "produces different tokens for different keys", function() {
+                var k2 = variables.tokenizer.newSessionKey();
+                var a  = variables.tokenizer.mint( "PII_EMAIL", "a@example.com", variables.key );
+                var b  = variables.tokenizer.mint( "PII_EMAIL", "a@example.com", k2 );
+                expect( a ).notToBe( b );
+            } );
+
+            it( "produces different tokens for different labels", function() {
+                var a = variables.tokenizer.mint( "LABEL_A", "same-value", variables.key );
+                var b = variables.tokenizer.mint( "LABEL_B", "same-value", variables.key );
+                expect( a ).notToBe( b );
+            } );
+
+        } );
+
+        describe( "Tokenizer.parse()", function() {
+
+            it( "returns an empty array when no tokens are present", function() {
+                var hits = variables.tokenizer.parse( "plain prose, no tokens here" );
+                expect( hits ).toBeArray();
+                expect( hits ).toHaveLength( 0 );
+            } );
+
+            it( "finds a single embedded token with correct offsets", function() {
+                var token = variables.tokenizer.mint( "PII_EMAIL", "user@example.com", variables.key );
+                var text  = "prefix " & token & " suffix";
+                var hits  = variables.tokenizer.parse( text );
+
+                expect( hits ).toHaveLength( 1 );
+                expect( hits[ 1 ].token ).toBe( token );
+                expect( hits[ 1 ].label ).toBe( "PII_EMAIL" );
+                expect( hits[ 1 ].hmac ).toMatch( "^[a-f0-9]{8}$" );
+                expect( mid( text, hits[ 1 ].start, hits[ 1 ].end - hits[ 1 ].start + 1 ) ).toBe( token );
+            } );
+
+            it( "finds multiple tokens in one text", function() {
+                var t1 = variables.tokenizer.mint( "AWS_ACCESS_KEY", "AKIAIOSFODNN7EXAMPLE", variables.key );
+                var t2 = variables.tokenizer.mint( "PII_EMAIL", "a@example.com", variables.key );
+                var t3 = variables.tokenizer.mint( "PII_SSN", "123-45-6789", variables.key );
+                var text = "key=" & t1 & " email=" & t2 & " ssn=" & t3;
+                var hits = variables.tokenizer.parse( text );
+
+                expect( hits ).toHaveLength( 3 );
+                expect( hits.map( ( h ) => h.label ) ).toBe( [ "AWS_ACCESS_KEY", "PII_EMAIL", "PII_SSN" ] );
+            } );
+
+            it( "handles the same token appearing twice (tracks both offsets)", function() {
+                var token = variables.tokenizer.mint( "DUP", "same", variables.key );
+                var text  = token & " ... " & token;
+                var hits  = variables.tokenizer.parse( text );
+
+                expect( hits ).toHaveLength( 2 );
+                expect( hits[ 1 ].start ).toBeLT( hits[ 2 ].start );
+            } );
+
+            it( "ignores ASCII-bracket lookalikes that are not real tokens", function() {
+                var fake = "[[SECRET:AWS_ACCESS_KEY:a1b2c3d4]]";
+                var hits = variables.tokenizer.parse( fake );
+                expect( hits ).toHaveLength( 0 );
+            } );
+
+        } );
+
+        describe( "Tokenizer.verify()", function() {
+
+            it( "returns true when value and key match the minted token", function() {
+                var token = variables.tokenizer.mint( "PII_EMAIL", "user@example.com", variables.key );
+                expect( variables.tokenizer.verify( token, "user@example.com", variables.key ) ).toBeTrue();
+            } );
+
+            it( "returns false when the value is different", function() {
+                var token = variables.tokenizer.mint( "PII_EMAIL", "user@example.com", variables.key );
+                expect( variables.tokenizer.verify( token, "different@example.com", variables.key ) ).toBeFalse();
+            } );
+
+            it( "returns false when the key is different", function() {
+                var token = variables.tokenizer.mint( "PII_EMAIL", "user@example.com", variables.key );
+                var k2    = variables.tokenizer.newSessionKey();
+                expect( variables.tokenizer.verify( token, "user@example.com", k2 ) ).toBeFalse();
+            } );
+
+            it( "returns false for a token-shaped string with a fabricated HMAC", function() {
+                var fake = char( 10214 ) & "SECRET:AWS_ACCESS_KEY:deadbeef" & char( 10215 );
+                expect( variables.tokenizer.verify( fake, "AKIAIOSFODNN7EXAMPLE", variables.key ) ).toBeFalse();
+            } );
+
+            it( "returns false when the token is malformed (extra chars)", function() {
+                var token = variables.tokenizer.mint( "PII_EMAIL", "user@example.com", variables.key );
+                expect( variables.tokenizer.verify( token & "x", "user@example.com", variables.key ) ).toBeFalse();
+            } );
+
+        } );
+
+        describe( "Tokenizer.newSessionKey()", function() {
+
+            it( "produces a non-empty string", function() {
+                var k = variables.tokenizer.newSessionKey();
+                expect( len( k ) ).toBeGT( 0 );
+            } );
+
+            it( "produces a different value on each call", function() {
+                var a = variables.tokenizer.newSessionKey();
+                var b = variables.tokenizer.newSessionKey();
+                expect( a ).notToBe( b );
+            } );
+
+        } );
+
+        describe( "round-trip", function() {
+
+            it( "mint → embed → parse → verify recovers the original (label, value) pair", function() {
+                var originalValue = "ghp_" & repeatString( "a", 36 );
+                var originalLabel = "GITHUB_PAT";
+                var token  = variables.tokenizer.mint( originalLabel, originalValue, variables.key );
+                var doc    = "The token is: " & token & ". End.";
+
+                var hits = variables.tokenizer.parse( doc );
+                expect( hits ).toHaveLength( 1 );
+                expect( hits[ 1 ].label ).toBe( originalLabel );
+                expect( variables.tokenizer.verify( hits[ 1 ].token, originalValue, variables.key ) ).toBeTrue();
+            } );
+
+        } );
+
+    }
+
+}

@@ -1,0 +1,92 @@
+/**
+ * RegistryDetector — exact-match against a user-curated list of secrets.
+ *
+ * Highest-priority detector. When a host app registers a known secret
+ * (DB password, API token, internal customer ID) via `registerSecret()`
+ * or the `boxlang.json` `bxSentinel.secrets` key, any verbatim occurrence
+ * in outbound text gets tokenized regardless of what the regex / entropy
+ * detectors think.
+ *
+ * Matching is case-sensitive literal substring — we do NOT want fuzzy
+ * matching for secrets (a partial match would leak the other half).
+ */
+class extends="IDetector" {
+
+    property name="entries" type="array";
+
+    function init( array secrets = [] ) {
+        variables.priority   = 1;
+        variables.sourceName = "RegistryDetector";
+        variables.entries    = [];
+
+        for ( var entry in arguments.secrets ) {
+            register( entry.label ?: "USER_REGISTERED", entry.value, entry.category ?: "registry" );
+        }
+
+        return this;
+    }
+
+    /**
+     * Add a secret to the registry at runtime.
+     */
+    function register(
+        required string label,
+        required string value,
+                 string category = "registry"
+    ) {
+        if ( !len( arguments.value ) ) {
+            return this;
+        }
+
+        variables.entries.append( {
+            "label"    : arguments.label,
+            "value"    : arguments.value,
+            "category" : arguments.category
+        } );
+
+        // Keep longest-first so an outer substring match wins over a shorter
+        // inner one when two registered values overlap.
+        arraySort( variables.entries, ( a, b ) => len( b.value ) - len( a.value ) );
+
+        return this;
+    }
+
+    function unregister( required string value ) {
+        var target = arguments.value;
+        variables.entries = variables.entries.filter( e => e.value != target );
+        return this;
+    }
+
+    numeric function size() {
+        return arrayLen( variables.entries );
+    }
+
+    array function scan( required string text ) {
+        var hits    = [];
+        var textLen = len( arguments.text );
+
+        for ( var entry in variables.entries ) {
+            var pos = 1;
+            while ( pos <= textLen ) {
+                var foundAt = find( entry.value, arguments.text, pos );
+                if ( foundAt == 0 ) {
+                    break;
+                }
+                hits.append(
+                    makeHit(
+                        start      : foundAt,
+                        end        : foundAt + len( entry.value ) - 1,
+                        value      : entry.value,
+                        label      : entry.label,
+                        category   : entry.category,
+                        confidence : 1.0
+                    )
+                );
+                pos = foundAt + len( entry.value );
+            }
+        }
+
+        return hits;
+    }
+
+}

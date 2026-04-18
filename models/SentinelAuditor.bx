@@ -1,0 +1,73 @@
+/**
+ * SentinelAuditor — plaintext-safe audit / warning channel.
+ *
+ * Uses BoxLang's `writeLog()` so it works in any runtime (MiniServer, ColdBox,
+ * Lambda). Hosts that want LogBox-flavored output can swap this instance out
+ * in WireBox.
+ *
+ * Contract: nothing logged here MAY contain secret plaintext. Warnings about
+ * specific tokens log only the 8-char HMAC suffix (which is already public
+ * in the token) — never the plaintext stored against it.
+ */
+class {
+
+    property name="logFile" type="string" default="bx-aisentinel";
+    property name="enabled" type="boolean" default="true";
+
+    function init( string logFile = "bx-aisentinel", boolean enabled = true ) {
+        variables.logFile = arguments.logFile;
+        variables.enabled = arguments.enabled;
+        return this;
+    }
+
+    /**
+     * Record that a token-shaped string appeared in an LLM response but failed
+     * HMAC verification (likely model-generated noise). We emit the 8-char
+     * suffix only — there is no plaintext to leak here, but stay paranoid.
+     */
+    function warnUnsignedToken( required string hmacSuffix, string context = "afterLLMCall" ) {
+        if ( !variables.enabled ) return;
+        _write( "warning", "unsigned token-shape passed through in " & arguments.context & " (hmac8=" & arguments.hmacSuffix & ")" );
+    }
+
+    /**
+     * Record an error in a detector — e.g. regex threw, catalog file malformed.
+     */
+    function warnDetectorError( required string source, required string message ) {
+        if ( !variables.enabled ) return;
+        _write( "error", "detector[" & arguments.source & "] error: " & arguments.message );
+    }
+
+    /**
+     * End-of-run structured summary. Metrics + counts only.
+     */
+    function runComplete( required struct metrics, required string runId ) {
+        if ( !variables.enabled ) return;
+
+        var payload = {
+            "event"           : "sentinel.run.complete",
+            "runId"           : arguments.runId,
+            "outboundTotalMs" : arguments.metrics.outboundMs    ?: 0,
+            "inboundTotalMs"  : arguments.metrics.inboundMs     ?: 0,
+            "toolRedactMs"    : arguments.metrics.toolRedactMs  ?: 0,
+            "toolRestoreMs"   : arguments.metrics.toolRestoreMs ?: 0,
+            "tokensMinted"    : arguments.metrics.tokensMinted  ?: 0,
+            "categories"      : arguments.metrics.categories    ?: {}
+        };
+
+        _write( "information", jsonSerialize( payload ) );
+    }
+
+    private function _write( required string level, required string message ) {
+        try {
+            writeLog(
+                type : arguments.level,
+                file : variables.logFile,
+                text : arguments.message
+            );
+        } catch ( any e ) {
+            // Logging must never block the middleware — swallow and move on.
+        }
+    }
+
+}

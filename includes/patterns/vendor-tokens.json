@@ -1,0 +1,114 @@
+{
+    "_meta": {
+        "source"      : "gitleaks (MIT) + detect-secrets (Apache-2.0), adapted",
+        "license"     : "bundled under Apache-2.0 per module license",
+        "lastUpdated" : "2026-04-17"
+    },
+    "patterns": [
+        {
+            "label"      : "GITHUB_PAT",
+            "category"   : "vendor-tokens",
+            "regex"      : "ghp_[0-9A-Za-z]{36}",
+            "confidence" : 0.99,
+            "description": "GitHub personal access token (classic)"
+        },
+        {
+            "label"      : "GITHUB_FINE_GRAINED_PAT",
+            "category"   : "vendor-tokens",
+            "regex"      : "github_pat_[0-9A-Za-z_]{82}",
+            "confidence" : 0.99,
+            "description": "GitHub fine-grained personal access token"
+        },
+        {
+            "label"      : "GITHUB_OAUTH",
+            "category"   : "vendor-tokens",
+            "regex"      : "gho_[0-9A-Za-z]{36}",
+            "confidence" : 0.99,
+            "description": "GitHub OAuth access token"
+        },
+        {
+            "label"      : "GITHUB_APP_TOKEN",
+            "category"   : "vendor-tokens",
+            "regex"      : "(ghu|ghs)_[0-9A-Za-z]{36}",
+            "confidence" : 0.99,
+            "description": "GitHub app user or server token"
+        },
+        {
+            "label"      : "GITLAB_PAT",
+            "category"   : "vendor-tokens",
+            "regex"      : "glpat-[0-9A-Za-z\\-_]{20}",
+            "confidence" : 0.99,
+            "description": "GitLab personal access token"
+        },
+        {
+            "label"      : "STRIPE_LIVE_KEY",
+            "category"   : "vendor-tokens",
+            "regex"      : "sk_live_[0-9a-zA-Z]{24,}",
+            "confidence" : 0.99,
+            "description": "Stripe live secret key"
+        },
+        {
+            "label"      : "STRIPE_TEST_KEY",
+            "category"   : "vendor-tokens",
+            "regex"      : "sk_test_[0-9a-zA-Z]{24,}",
+            "confidence" : 0.97,
+            "description": "Stripe test secret key"
+        },
+        {
+            "label"      : "OPENAI_API_KEY",
+            "category"   : "vendor-tokens",
+            "regex"      : "sk-[A-Za-z0-9]{48}",
+            "confidence" : 0.95,
+            "description": "OpenAI API key"
+        },
+        {
+            "label"      : "ANTHROPIC_API_KEY",
+            "category"   : "vendor-tokens",
+            "regex"      : "sk-ant-[A-Za-z0-9_\\-]{40,}",
+            "confidence" : 0.98,
+            "description": "Anthropic API key"
+        },
+        {
+            "label"      : "OPENROUTER_API_KEY",
+            "category"   : "vendor-tokens",
+            "regex"      : "sk-or-v1-[A-Fa-f0-9]{64}",
+            "confidence" : 0.99,
+            "description": "OpenRouter API key"
+        },
+        {
+            "label"      : "SLACK_BOT_TOKEN",
+            "category"   : "vendor-tokens",
+            "regex"      : "xoxb-[0-9]+-[0-9]+-[A-Za-z0-9]+",
+            "confidence" : 0.99,
+            "description": "Slack bot token"
+        },
+        {
+            "label"      : "SLACK_USER_TOKEN",
+            "category"   : "vendor-tokens",
+            "regex"      : "xoxp-[0-9]+-[0-9]+-[0-9]+-[A-Za-z0-9]+",
+            "confidence" : 0.99,
+            "description": "Slack user token"
+        },
+        {
+            "label"      : "TWILIO_API_KEY",
+            "category"   : "vendor-tokens",
+            "regex"      : "SK[0-9a-fA-F]{32}",
+            "confidence" : 0.95,
+            "description": "Twilio API key"
+        },
+        {
+            "label"      : "SENDGRID_API_KEY",
+            "category"   : "vendor-tokens",
+            "regex"      : "SG\\.[A-Za-z0-9_\\-]{22}\\.[A-Za-z0-9_\\-]{43}",
+            "confidence" : 0.99,
+            "description": "SendGrid API key"
+        },
+        {
+            "label"      : "SQUARE_ACCESS_TOKEN",
+            "category"   : "vendor-tokens",
+            "regex"      : "EAAA[0-9A-Za-z\\-_]{60}",
+            "confidence" : 0.99,
+            "description": "Square access token"
+        }
+    ]
+}

@@ -6,6 +6,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-04-18
+
+### Fixed
+
+- **SentinelPolicy looked for the wrong config filename.** `_defaultBoxlangJsonPath()` was returning `/boxlang.json` but BoxLang's canonical filename is `.boxlang.json` (the dotfile — that's what `server.json` references as `engineConfigFile` and what BoxLang natively reads). As a result, any configuration written to `.boxlang.json` (including `externalDetectors` / `registeredSecrets` / policy overrides) was silently ignored. Policy now prefers `.boxlang.json` and falls back to `boxlang.json` for projects using the non-dot variant.
+
 ## [0.2.0] - 2026-04-18
 
 Adds the external-detector plugin seam so sibling modules can contribute detectors into the pipeline without modifying core code. This is the foundation for [`bx-AISentinel-ONNX`](https://github.com/mrigsby/bx-AISentinel-ONNX) (Tier 1 NER) and any future domain-specific detectors.

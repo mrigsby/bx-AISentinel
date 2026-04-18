@@ -2,7 +2,7 @@
 
 > A BoxLang AI middleware that tokenizes secrets, credentials, and PII in outbound LLM prompts and restores them on the inbound response. Drop-in, provider-agnostic, with per-call timing metrics.
 
-**Status:** v0.2.0 · pre-release · [Changelog](CHANGELOG.md)
+**Status:** v0.2.1 · pre-release · [Changelog](CHANGELOG.md)
 
 ## What it does
 
@@ -192,7 +192,7 @@ Four layers, highest wins:
 
 1. Constructor overrides: `new AiSentinelMiddleware( settings: { … } )`
 2. Project-root `.sentinel.json`
-3. `boxlang.json` → `bxSentinel` (or `modules.bx-aisentinel`)
+3. `.boxlang.json` (or `boxlang.json`) → `bxSentinel` (or `modules.bx-aisentinel`)
 4. Module defaults
 
 | Setting | Default | Purpose |

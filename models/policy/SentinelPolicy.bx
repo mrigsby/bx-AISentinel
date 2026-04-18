@@ -4,7 +4,7 @@
  * Precedence (highest wins):
  *   1. Constructor-passed `overrides` struct
  *   2. Project-root `.sentinel.json`
- *   3. Application `boxlang.json` → `bxSentinel` key (or `modules.bx-aisentinel`)
+ *   3. Application `.boxlang.json` (or `boxlang.json`) → `bxSentinel` key (or `modules.bx-aisentinel`)
  *   4. Module defaults (this file's `getDefaults()`)
  *
  * Merge rules:
@@ -203,9 +203,20 @@ class {
         }
     }
 
+    /**
+     * BoxLang's canonical config filename is `.boxlang.json` (the dotfile —
+     * that's what `server.json` references as `engineConfigFile` and what
+     * BoxLang itself reads). Some projects use the non-dot variant too, so
+     * we check `.boxlang.json` first and fall back to `boxlang.json`.
+     */
     private string function _defaultBoxlangJsonPath() {
-        try { return expandPath( "/boxlang.json" ); }
-        catch ( any e ) { return ""; }
+        try {
+            var dotted = expandPath( "/.boxlang.json" );
+            if ( len( dotted ) && fileExists( dotted ) ) return dotted;
+            var plain = expandPath( "/boxlang.json" );
+            if ( len( plain ) && fileExists( plain ) ) return plain;
+            return dotted;   // non-existent fallback; validated by caller
+        } catch ( any e ) { return ""; }
     }
 
     private string function _defaultSentinelJsonPath() {

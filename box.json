@@ -7,6 +7,7 @@
     "homepage"    : "https://www.ortussolutions.com",
     "description" : "BoxLang AI middleware that tokenizes secrets, credentials, and PII in outbound LLM prompts and restores them on the inbound response. Drop-in, provider-agnostic, per-call timing metrics.",
     "type"        : "modules",
+    "directory"   : "modules_app",
     "keywords"    : [
         "boxlang",
         "bx-ai",

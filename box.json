@@ -24,7 +24,7 @@
         "bx-ai": "^1.0.0"
     },
     "devDependencies": {
-        "testbox": "^5.0.0"
+        "testbox": "^7.0.0"
     },
     "license": [
         {

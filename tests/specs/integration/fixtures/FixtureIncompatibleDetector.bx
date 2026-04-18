@@ -1,0 +1,19 @@
+/**
+ * FixtureIncompatibleDetector — claims a major-version-mismatched contract.
+ * Used to verify the contract-compatibility gate rejects it and fires the
+ * interception point.
+ */
+class extends="bxAiSentinel.models.detectors.IDetector" {
+
+    function init() {
+        variables.priority        = 2;
+        variables.sourceName      = "FixtureIncompatibleDetector";
+        variables.contractVersion = "2.0.0";
+        return this;
+    }
+
+    array function scan( required string text ) {
+        return [];
+    }
+
+}

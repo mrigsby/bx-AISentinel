@@ -1,0 +1,40 @@
+/**
+ * FixtureExternalDetector — a happy-path detector used to verify the
+ * external-detector plugin seam in ExternalDetectorsSpec.
+ *
+ * Not a real detector. Hardcodes a single hit for the sentinel word
+ * "MATCHME" so specs can assert the sentinel picked it up and invoked it.
+ */
+class extends="bxAiSentinel.models.detectors.IDetector" {
+
+    property name="marker"    type="string" default="MATCHME";
+    property name="labelName" type="string" default="FIXTURE_TOKEN";
+    property name="category"  type="string" default="fixture";
+
+    function init( string marker = "MATCHME", string labelName = "FIXTURE_TOKEN", string category = "fixture" ) {
+        variables.priority        = 2;
+        variables.sourceName      = "FixtureExternalDetector";
+        variables.contractVersion = "1.0.0";
+        variables.marker          = arguments.marker;
+        variables.labelName       = arguments.labelName;
+        variables.category        = arguments.category;
+        return this;
+    }
+
+    array function scan( required string text ) {
+        var hits    = [];
+        var pos     = find( variables.marker, arguments.text );
+        if ( pos == 0 ) return hits;
+
+        hits.append( makeHit(
+            start      : pos,
+            end        : pos + len( variables.marker ) - 1,
+            value      : variables.marker,
+            label      : variables.labelName,
+            category   : variables.category,
+            confidence : 1.0
+        ) );
+        return hits;
+    }
+
+}

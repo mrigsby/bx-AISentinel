@@ -9,13 +9,13 @@
  */
 class {
 
-    property name="moduleVersion" default="0.1.0";
+    property name="moduleVersion" default="0.2.0";
 
     this.title          = "BX AI Sentinel";
     this.author         = "Ortus Solutions, Corp";
     this.webURL         = "https://www.ortussolutions.com";
     this.description    = "AI middleware for secret / credential / PII redaction with reversible tokenization.";
-    this.version        = "0.1.0";
+    this.version        = "0.2.0";
     this.cfmapping      = "bxAiSentinel";
     this.modelNamespace = "bxaisentinel";
     this.autoMapModels  = true;
@@ -23,6 +23,13 @@ class {
     // not a ColdBox module, so it does NOT belong in this dependency list.
     // ColdBox would fail to activate a module with that name here.
     this.dependencies   = [];
+
+    // Interception points this module announces. Host apps can subscribe an
+    // interceptor to react to external-detector load failures (log to Slack,
+    // page oncall, refuse to start, etc.). See README "External detectors".
+    this.interceptorEvents = [
+        "onSentinelDetectorLoadFailure"
+    ];
 
     /**
      * Module settings. Mirror of `SentinelPolicy.getDefaults()` — keep this
@@ -56,7 +63,13 @@ class {
             "auditLogFile"           : "bx-aisentinel",
             "auditEnabled"           : true,
             "explainTokensToLLM"     : true,
-            "tokenProtocolPath"      : ""
+            "tokenProtocolPath"      : "",
+            // WireBox IDs (or fully-qualified class paths) of external detectors
+            // that satisfy the IDetector@1.0.0 contract. See models/detectors/CONTRACT.md
+            // and README "External detectors". Appended across config layers.
+            "externalDetectors"      : [],
+            // Per-detector init() overrides, keyed by the detector's resolution ID.
+            "externalDetectorOptions": {}
         };
     }
 

@@ -77,7 +77,9 @@ class {
             "auditLogFile"          : "bx-aisentinel",
             "auditEnabled"          : true,
             "explainTokensToLLM"    : true,
-            "tokenProtocolPath"     : ""
+            "tokenProtocolPath"     : "",
+            "externalDetectors"     : [],
+            "externalDetectorOptions" : {}
         };
     }
 
@@ -125,6 +127,27 @@ class {
         return variables.settings.customPatterns;
     }
 
+    /**
+     * WireBox IDs of external detectors to resolve and append into the
+     * detection pipeline. Appended across config layers so host apps can
+     * add to a base shared config.
+     *
+     * Format: `DetectorName@ModuleName` (ColdBox convention), e.g.
+     * `"OnnxNerDetector@bx-AISentinel-ONNX"`.
+     */
+    array function getExternalDetectors() {
+        return variables.settings.externalDetectors;
+    }
+
+    /**
+     * Per-detector init() overrides, keyed by the detector's WireBox ID.
+     * Each value is a struct passed as constructor args when the detector
+     * is resolved.
+     */
+    struct function getExternalDetectorOptions() {
+        return variables.settings.externalDetectorOptions;
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // Internals
     // ─────────────────────────────────────────────────────────────────────
@@ -134,7 +157,7 @@ class {
      * specially; everything else is a straight overwrite.
      */
     private function _mergeLayer( required struct target, required struct src ) {
-        var appendingKeys = [ "registeredSecrets", "customPatterns" ];
+        var appendingKeys = [ "registeredSecrets", "customPatterns", "externalDetectors" ];
 
         for ( var key in arguments.src ) {
             if ( arrayContains( appendingKeys, key ) && isArray( arguments.src[ key ] ) ) {

@@ -1,7 +1,7 @@
 {
     "name"        : "BX AI Sentinel Middleware",
     "slug"        : "bx-aisentinel",
-    "version"     : "0.1.0",
+    "version"     : "0.2.0",
     "author"      : "Ortus Solutions, Corp",
     "location"    : "forgeboxStorage",
     "homepage"    : "https://www.ortussolutions.com",

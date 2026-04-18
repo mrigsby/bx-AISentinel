@@ -21,6 +21,7 @@ class {
 
     property name="priority" type="numeric" default="3";
     property name="sourceName" type="string" default="IDetector";
+    property name="contractVersion" type="string" default="1.0.0";
 
     function init() {
         return this;
@@ -39,6 +40,18 @@ class {
 
     string function getSourceName() {
         return variables.sourceName;
+    }
+
+    /**
+     * The IDetector contract version this detector implements. External
+     * sibling modules (e.g. `bx-AISentinel-ONNX`) declare their supported
+     * version here. `AiSentinelMiddleware._composeCore()` checks for
+     * compatibility before adding an external detector to the pipeline.
+     *
+     * Contract is documented in `models/detectors/CONTRACT.md`.
+     */
+    string function getContractVersion() {
+        return variables.contractVersion;
     }
 
     /**

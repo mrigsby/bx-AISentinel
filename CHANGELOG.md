@@ -6,6 +6,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-18
+
+Adds the external-detector plugin seam so sibling modules can contribute detectors into the pipeline without modifying core code. This is the foundation for [`bx-AISentinel-ONNX`](https://github.com/mrigsby/bx-AISentinel-ONNX) (Tier 1 NER) and any future domain-specific detectors.
+
+### Added
+
+- `IDetector` contract formalized at version `1.0.0`:
+  - New `getContractVersion()` method on `IDetector.bx` (default `"1.0.0"`).
+  - New `models/detectors/CONTRACT.md` documenting the required surface, Hit struct shape, label / category conventions, and load-failure behavior. External detector authors build against this.
+- Two new `SentinelPolicy` settings:
+  - `externalDetectors` (array) — WireBox IDs or fully-qualified class paths of sibling-module detectors to resolve into the pipeline. Appended across config layers.
+  - `externalDetectorOptions` (struct) — per-detector init args, keyed by resolution ID.
+- `AiSentinelMiddleware` extensions:
+  - External-detector resolution inside `_composeCore()` with soft-fail semantics (a single broken plugin never takes the sentinel down).
+  - Contract-version compatibility gate — major-version mismatch rejects the detector at load time.
+  - Duck-type surface check — rejects classes missing `scan` / `getPriority` / `getSourceName`.
+  - Public `getLoadReport()` returning `{ compatibleContractVersion, degraded, detectors: [ { name, status, reason? } ] }` for host health endpoints.
+- New `onSentinelDetectorLoadFailure` ColdBox interception point. Fires with `{ detectorName, reason, attemptedContractVersion, supportedContractVersion, failureMode }` so host apps can wire their own escalation (Slack, PagerDuty, refuse-to-start, etc.). Declared in `ModuleConfig.bx`.
+- `SentinelAuditor.warnDetectorError()` now also called on external-detector load failures with structured context.
+- TestBox integration spec `ExternalDetectorsSpec.bx` covering default-empty, happy-path resolution, options pass-through, contract-version mismatch, incomplete-surface rejection, unresolvable-class path, and mixed-outcome load-report ordering.
+- Three test fixtures under `tests/specs/integration/fixtures/`: `FixtureExternalDetector` (happy path), `FixtureIncompatibleDetector` (major-version mismatch), `FixtureIncompleteDetector` (missing required methods).
+- README "External detectors" section covering wiring, load-report inspection, failure-handling / interceptor pattern, and contract-versioning semantics.
+
+### Compatibility
+
+No breaking changes. Default `externalDetectors = []` means v0.1.x behavior is preserved byte-for-byte when hosts don't opt in.
+
 ## [0.1.0] - 2026-04-17
 
 Initial pre-release.

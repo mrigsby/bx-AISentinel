@@ -1,0 +1,19 @@
+/**
+ * FixtureIncompleteDetector — missing the required `scan` / `getPriority` /
+ * `getSourceName` surface. Used to verify the duck-type contract check
+ * rejects it without crashing the sentinel.
+ */
+class {
+
+    function init() {
+        return this;
+    }
+
+    // Deliberately exposes getContractVersion() (so the contract-version
+    // gate passes) but nothing else — the duck-type surface check must
+    // catch the missing methods.
+    string function getContractVersion() {
+        return "1.0.0";
+    }
+
+}

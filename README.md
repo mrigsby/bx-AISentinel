@@ -2,7 +2,7 @@
 
 > A BoxLang AI middleware that tokenizes secrets, credentials, and PII in outbound LLM prompts and restores them on the inbound response. Drop-in, provider-agnostic, with per-call timing metrics.
 
-**Status:** v0.1.0 · pre-release · [Changelog](CHANGELOG.md)
+**Status:** v0.2.0 · pre-release · [Changelog](CHANGELOG.md)
 
 ## What it does
 
@@ -210,9 +210,74 @@ Four layers, highest wins:
 | `categoriesEnabled` | see below | Which pattern categories to apply. |
 | `registeredSecrets` | `[]` | Array of `{ label, value, category }` (appended across config layers). |
 | `customPatterns` | `[]` | Array of `{ label, regex, category, confidence, validator }` (appended across layers). |
+| `externalDetectors` | `[]` | WireBox IDs (or fully-qualified class paths) of sibling-module detectors. See "External detectors" below (appended across layers). |
+| `externalDetectorOptions` | `{}` | Per-detector init args, keyed by the detector's resolution ID. |
 | `enabled` | `true` | Runtime master switch. When `false`, every hook short-circuits. |
 
 Default `categoriesEnabled`: `cloud-keys`, `vendor-tokens`, `generic`, `pii`, `boxlang`, `entropy`, `registry`.
+
+## External detectors
+
+bx-AISentinel exposes a plugin seam so sibling modules can contribute additional detectors to the pipeline without modifying the core. This is how Tier 1 NER detection ([`bx-AISentinel-ONNX`](https://github.com/mrigsby/bx-AISentinel-ONNX)) is delivered, and how you would ship custom detectors for proprietary entity formats, regulatory-specific patterns, or domain-specific heuristics.
+
+An external detector is any class that implements the [`IDetector@1.0.0` contract](models/detectors/CONTRACT.md): a `scan()` method returning an array of `Hit` structs plus the usual `getPriority()`, `getSourceName()`, and `getContractVersion()` introspection methods. The cleanest implementation path is to extend [`models/detectors/IDetector.bx`](models/detectors/IDetector.bx); duck-typed classes with the same surface are also accepted.
+
+### Wiring
+
+```javascript
+var sentinel = new AiSentinelMiddleware( settings: {
+    "externalDetectors" : [
+        "OnnxNerDetector@bx-AISentinel-ONNX"            // ColdBox-convention WireBox ID
+        // or:
+        // "my.app.detectors.CustomDetector"            // fully-qualified class path
+    ],
+    "externalDetectorOptions" : {
+        "OnnxNerDetector@bx-AISentinel-ONNX" : {
+            "modelPath" : "~/.bx-aisentinel/models/gliner-pii-v1/",
+            "assetMode" : "manual"
+        }
+    }
+} );
+```
+
+Resolution order: IDs containing a `.` go through `createObject( "component", ... )`; everything else goes through `application.wirebox` (the ColdBox convention). Host apps without ColdBox should prefer class paths.
+
+### Load report
+
+```javascript
+var report = sentinel.getLoadReport();
+// → {
+//       compatibleContractVersion : "1.0.0",
+//       degraded                  : false,
+//       detectors                 : [
+//           { name: "OnnxNerDetector@bx-AISentinel-ONNX", status: "loaded" }
+//       ]
+//   }
+```
+
+`degraded: true` means at least one declared external detector failed to load. Surface this from a health endpoint so ops can see when a plugin silently fell out of the pipeline.
+
+### Failure handling
+
+bx-AISentinel never hard-fails on a single broken plugin — the sentinel stays up on its built-in detectors. On any external-detector resolution error (missing class, contract-version mismatch, constructor throw, incomplete surface), it:
+
+1. Logs a structured entry via `SentinelAuditor.warnDetectorError( detectorName, reason )`.
+2. Marks the detector `status: "degraded"` in `getLoadReport()` and sets `degraded: true`.
+3. Fires the `onSentinelDetectorLoadFailure` interception point.
+
+Host apps decide their own escalation. Subscribe an interceptor in any ColdBox `Interceptor.cfc`:
+
+```javascript
+function onSentinelDetectorLoadFailure( event, interceptData ) {
+    // interceptData = { detectorName, reason, attemptedContractVersion, supportedContractVersion, failureMode }
+    // Send to Slack, page oncall, refuse to start — whatever fits your risk posture.
+    logBox.getLogger( this ).error( "Sentinel detector failed: " & interceptData.detectorName );
+}
+```
+
+### Contract versioning
+
+The supported contract version is `1.0.0`. A detector declaring a major-version mismatch (e.g. `2.0.0`) is rejected at load time with `failureMode: "contract-mismatch"`. Minor / patch versions within the same major are accepted. Breaking changes to the contract require a major bump on both sides.
 
 ## Public API
 
@@ -231,6 +296,9 @@ var metrics = sentinel.getLastRunMetrics();
 var policy = sentinel.getPolicy();
 policy.getSourceReport();
 // → { defaultsApplied, boxlangJsonLoaded, sentinelJsonLoaded, overridesApplied }
+
+var load = sentinel.getLoadReport();
+// → { compatibleContractVersion, degraded, detectors: [ { name, status, reason? } ] }
 
 sentinel.isEnabled();
 ```
@@ -279,7 +347,7 @@ Coverage: 12 TestBox spec files covering detectors, tokenizer, manifest, detecti
 
 ## Demo application
 
-The companion [**bx-AISentinel-demo**](https://github.com/mrigsby/bx-AISentinel-demo) repository is the end-to-end acceptance test for this module. It's a ColdBox 8 + CBWire chat app on BoxLang MiniServer that drives a real OpenRouter call through bx-AISentinel and surfaces the middleware's behavior in the UI.
+The companion [**bx-AISentinel-demo**](https://github.com/mrigsby/bx-AISentinel-demo) repository is the end-to-end acceptance test for this module. It's a ColdBox 8 + CBWire chat app on BoxLang Server that drives a real OpenRouter call through bx-AISentinel and surfaces the middleware's behavior in the UI.
 
 ### Features
 

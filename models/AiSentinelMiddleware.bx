@@ -29,12 +29,22 @@ class {
     property name="tokenProtocolContent" type="string" default="";
     property name="lastRunMetrics"  type="struct";
     property name="persistentRunContext" type="any";
+    property name="loadReport"      type="struct";
+
+    // Contract version this middleware expects from external detectors.
+    // See models/detectors/CONTRACT.md. Major-version must match.
+    variables.SUPPORTED_CONTRACT_VERSION = "1.0.0";
 
     function init( struct settings = {} ) {
         variables.name        = "AiSentinelMiddleware";
         variables.description = "Redacts secrets / PII before LLM calls and restores on return.";
         variables.lastRunMetrics = {};
         variables.persistentRunContext = javaCast( "null", "" );
+        variables.loadReport = {
+            "compatibleContractVersion" : variables.SUPPORTED_CONTRACT_VERSION,
+            "detectors"                 : [],
+            "degraded"                  : false
+        };
 
         // Resolve the effective policy: defaults → boxlang.json → .sentinel.json → constructor overrides
         variables.policy = structKeyExists( arguments.settings, "policy" )
@@ -107,6 +117,22 @@ class {
                     requireMixedCharset : arguments.policy.requiresMixedCharset()
                 )
             );
+        }
+
+        // External detectors from sibling modules (e.g. bx-AISentinel-ONNX).
+        // Each one is resolved independently; a single broken plugin does not
+        // take the sentinel down — see models/detectors/CONTRACT.md.
+        var externalIds     = arguments.policy.getExternalDetectors();
+        var externalOptions = arguments.policy.getExternalDetectorOptions();
+        for ( var id in externalIds ) {
+            var loaded = _resolveExternalDetector(
+                id       : id,
+                options  : structKeyExists( externalOptions, id ) ? externalOptions[ id ] : {},
+                auditor  : arguments.auditor
+            );
+            if ( !isNull( loaded ) ) {
+                detectors.append( loaded );
+            }
         }
 
         var engine = new DetectionEngine( detectors: detectors );
@@ -545,6 +571,190 @@ class {
             return resultClass.continue();
         } catch ( any e ) {
             return { "type": "continue" };
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // External-detector plugin support
+    // ─────────────────────────────────────────────────────────────────────
+
+    /**
+     * Snapshot of what happened when the detector pipeline was composed.
+     * Structure:
+     *   {
+     *       compatibleContractVersion : "1.0.0",
+     *       degraded                  : boolean,   // true if any external detector failed to load
+     *       detectors                 : [ { name, status, reason? } ]
+     *   }
+     *
+     * Host apps can surface this in a health endpoint so ops can see when
+     * a declared external detector silently fell out of the pipeline.
+     */
+    struct function getLoadReport() {
+        return variables.loadReport;
+    }
+
+    /**
+     * Resolve one external detector by WireBox ID or fully-qualified class path.
+     *
+     * Order of resolution:
+     *   1. If `id` contains a '.' it's treated as a fully-qualified class path
+     *      (e.g. `tests.specs.integration.fixtures.FixtureExternalDetector`)
+     *      and instantiated via `createObject( "component", id )`.
+     *   2. Otherwise WireBox is consulted via `application.wirebox` (the
+     *      ColdBox convention). If WireBox is not available, the resolution
+     *      fails softly and the interception point fires.
+     *
+     * Contract-version compatibility is checked on the resolved instance.
+     * Failures at any step log via the auditor, fire the
+     * `onSentinelDetectorLoadFailure` interception, mark the detector
+     * degraded in `loadReport`, and return null so the caller skips it.
+     */
+    private any function _resolveExternalDetector(
+        required string id,
+        required struct options,
+        required any    auditor
+    ) {
+        var reason = "";
+
+        try {
+            var instance = _instantiateDetector( arguments.id, arguments.options );
+
+            // Contract compatibility gate — major-version must match.
+            var declared = _safeGetContractVersion( instance );
+            if ( !_isContractCompatible( declared ) ) {
+                reason = "contract version " & declared & " incompatible with " & variables.SUPPORTED_CONTRACT_VERSION;
+                _recordDetectorLoadFailure(
+                    detectorName             : arguments.id,
+                    reason                   : reason,
+                    attemptedContractVersion : declared,
+                    failureMode              : "contract-mismatch",
+                    auditor                  : arguments.auditor
+                );
+                return javaCast( "null", "" );
+            }
+
+            // Light duck-type check — external detectors must expose scan().
+            if ( !_detectorSatisfiesContract( instance ) ) {
+                reason = "missing required methods (scan / getPriority / getSourceName)";
+                _recordDetectorLoadFailure(
+                    detectorName             : arguments.id,
+                    reason                   : reason,
+                    attemptedContractVersion : declared,
+                    failureMode              : "contract-mismatch",
+                    auditor                  : arguments.auditor
+                );
+                return javaCast( "null", "" );
+            }
+
+            variables.loadReport.detectors.append( {
+                "name"   : arguments.id,
+                "status" : "loaded"
+            } );
+            return instance;
+        }
+        catch ( any e ) {
+            reason = len( reason ) ? reason : ( e.message ?: "unknown error" );
+            _recordDetectorLoadFailure(
+                detectorName             : arguments.id,
+                reason                   : reason,
+                attemptedContractVersion : "",
+                failureMode              : "resolution-error",
+                auditor                  : arguments.auditor
+            );
+            return javaCast( "null", "" );
+        }
+    }
+
+    private any function _instantiateDetector( required string id, required struct options ) {
+        // Class path — test fixtures and non-ColdBox hosts use this.
+        if ( find( ".", arguments.id ) > 0 ) {
+            var klass = createObject( "component", arguments.id );
+            if ( structCount( arguments.options ) ) {
+                return klass.init( argumentCollection = arguments.options );
+            }
+            return klass.init();
+        }
+
+        // WireBox ID — ColdBox convention: `DetectorName@ModuleName`.
+        if ( !structKeyExists( application, "wirebox" ) ) {
+            throw( message: "WireBox is not available — cannot resolve detector by ID. Use a fully-qualified class path instead." );
+        }
+        return structCount( arguments.options )
+            ? application.wirebox.getInstance( name = arguments.id, initArguments = arguments.options )
+            : application.wirebox.getInstance( arguments.id );
+    }
+
+    private string function _safeGetContractVersion( required any instance ) {
+        try {
+            return arguments.instance.getContractVersion();
+        } catch ( any e ) {
+            // Detector doesn't expose getContractVersion — treat as pre-1.0 / missing.
+            return "";
+        }
+    }
+
+    /**
+     * Major-version compatibility check. `"1.x.y"` matches `SUPPORTED_CONTRACT_VERSION = "1.0.0"`.
+     * Empty / malformed versions fail closed.
+     */
+    private boolean function _isContractCompatible( required string declared ) {
+        if ( !len( arguments.declared ) ) return false;
+        var declaredMajor  = listFirst( arguments.declared, "." );
+        var supportedMajor = listFirst( variables.SUPPORTED_CONTRACT_VERSION, "." );
+        return declaredMajor == supportedMajor;
+    }
+
+    /**
+     * Verifies an instance exposes the required IDetector surface. Duck-typed:
+     * classes that don't inherit from `IDetector.bx` are fine as long as they
+     * expose the right methods.
+     */
+    private boolean function _detectorSatisfiesContract( required any instance ) {
+        return structKeyExists( arguments.instance, "scan" )
+            && structKeyExists( arguments.instance, "getPriority" )
+            && structKeyExists( arguments.instance, "getSourceName" );
+    }
+
+    private function _recordDetectorLoadFailure(
+        required string detectorName,
+        required string reason,
+        required string attemptedContractVersion,
+        required string failureMode,
+        required any    auditor
+    ) {
+        variables.loadReport.degraded = true;
+        variables.loadReport.detectors.append( {
+            "name"   : arguments.detectorName,
+            "status" : "degraded",
+            "reason" : arguments.reason
+        } );
+
+        arguments.auditor.warnDetectorError(
+            arguments.detectorName,
+            "load failed (" & arguments.failureMode & "): " & arguments.reason
+        );
+
+        _fireInterception( "onSentinelDetectorLoadFailure", {
+            "detectorName"             : arguments.detectorName,
+            "reason"                   : arguments.reason,
+            "attemptedContractVersion" : arguments.attemptedContractVersion,
+            "supportedContractVersion" : variables.SUPPORTED_CONTRACT_VERSION,
+            "failureMode"              : arguments.failureMode
+        } );
+    }
+
+    /**
+     * Fire a ColdBox interception, best-effort. Swallows any failure — the
+     * auditor log is the authoritative record; interception is just the
+     * developer's escalation hook.
+     */
+    private function _fireInterception( required string event, required struct data ) {
+        try {
+            if ( !structKeyExists( application, "cbController" ) ) return;
+            application.cbController.getInterceptorService().announce( arguments.event, arguments.data );
+        } catch ( any e ) {
+            // Swallow — already logged via auditor.
         }
     }
 

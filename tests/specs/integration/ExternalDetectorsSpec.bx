@@ -1,0 +1,179 @@
+/**
+ * ExternalDetectorsSpec — integration coverage for the sibling-module plugin
+ * seam introduced in v0.2.0.
+ *
+ * Verifies:
+ *   - Default-empty `externalDetectors` leaves behavior identical to v0.1.x.
+ *   - Fully-qualified class-path detectors resolve and are invoked during scan.
+ *   - Contract-version mismatch fires the failure path without crashing the sentinel.
+ *   - Duck-type surface mismatch fires the failure path.
+ *   - `getLoadReport()` reflects both success and degraded states accurately.
+ *   - Constructor options in `externalDetectorOptions` reach the detector's init().
+ *
+ * Fixtures live under `tests/specs/integration/fixtures/` and are resolved via
+ * fully-qualified class paths so the specs run without a ColdBox / WireBox
+ * context (the test harness boots plain BoxLang, not a ColdBox app).
+ */
+class extends="testbox.system.BaseSpec" {
+
+    function run() {
+
+        describe( "AiSentinelMiddleware external-detector plugin seam", function() {
+
+            it( "leaves the load report empty and non-degraded when no external detectors are declared", function() {
+                var mw     = new bxAiSentinel.models.AiSentinelMiddleware();
+                var report = mw.getLoadReport();
+
+                expect( report ).toHaveKey( "compatibleContractVersion" );
+                expect( report ).toHaveKey( "detectors" );
+                expect( report ).toHaveKey( "degraded" );
+                expect( report.compatibleContractVersion ).toBe( "1.0.0" );
+                expect( report.detectors ).toHaveLength( 0 );
+                expect( report.degraded  ).toBeFalse();
+            } );
+
+            it( "resolves a well-formed external detector and includes its hits in the pipeline", function() {
+                var mw = new bxAiSentinel.models.AiSentinelMiddleware( settings: {
+                    "externalDetectors" : [
+                        "tests.specs.integration.fixtures.FixtureExternalDetector"
+                    ]
+                } );
+
+                var ctx = {
+                    "metadata" : {},
+                    "messages" : [ { "role": "user", "content": "this string has MATCHME in it" } ]
+                };
+
+                mw.beforeAgentRun( ctx );
+                mw.beforeLLMCall( ctx );
+
+                // The fixture's marker is redacted → content should not contain it verbatim.
+                var userText = _joinUserContent( ctx.messages );
+                expect( userText ).notToInclude( "MATCHME" );
+
+                // Token minted under the fixture's label.
+                expect( userText ).toInclude( "SECRET:FIXTURE_TOKEN:" );
+
+                // Load report shows it as loaded.
+                var report = mw.getLoadReport();
+                expect( report.degraded ).toBeFalse();
+                expect( report.detectors ).toHaveLength( 1 );
+                expect( report.detectors[ 1 ].name   ).toBe( "tests.specs.integration.fixtures.FixtureExternalDetector" );
+                expect( report.detectors[ 1 ].status ).toBe( "loaded" );
+            } );
+
+            it( "passes externalDetectorOptions through to the detector's init()", function() {
+                var id = "tests.specs.integration.fixtures.FixtureExternalDetector";
+                var mw = new bxAiSentinel.models.AiSentinelMiddleware( settings: {
+                    "externalDetectors" : [ id ],
+                    "externalDetectorOptions" : {
+                        "#id#" : {
+                            "marker"    : "CUSTOMNEEDLE",
+                            "labelName" : "CUSTOM_FIXTURE",
+                            "category"  : "fixture"
+                        }
+                    }
+                } );
+
+                var ctx = {
+                    "metadata" : {},
+                    "messages" : [ { "role": "user", "content": "swap the CUSTOMNEEDLE value please" } ]
+                };
+
+                mw.beforeAgentRun( ctx );
+                mw.beforeLLMCall( ctx );
+
+                var userText = _joinUserContent( ctx.messages );
+                expect( userText ).notToInclude( "CUSTOMNEEDLE" );
+                expect( userText ).toInclude( "SECRET:CUSTOM_FIXTURE:" );
+            } );
+
+            it( "marks a contract-version-mismatched detector as degraded and skips it", function() {
+                var mw = new bxAiSentinel.models.AiSentinelMiddleware( settings: {
+                    "externalDetectors" : [
+                        "tests.specs.integration.fixtures.FixtureIncompatibleDetector"
+                    ]
+                } );
+
+                var report = mw.getLoadReport();
+                expect( report.degraded ).toBeTrue();
+                expect( report.detectors ).toHaveLength( 1 );
+                expect( report.detectors[ 1 ].status ).toBe( "degraded" );
+                expect( report.detectors[ 1 ].reason ).toInclude( "2.0.0" );
+                expect( report.detectors[ 1 ].reason ).toInclude( "1.0.0" );
+
+                // Built-in detectors still work — run a regex-catalog-matching input.
+                var ctx = {
+                    "metadata" : {},
+                    "messages" : [ { "role": "user", "content": "AWS key: AKIAIOSFODNN7EXAMPLE" } ]
+                };
+                mw.beforeAgentRun( ctx );
+                mw.beforeLLMCall( ctx );
+                expect( _joinUserContent( ctx.messages ) ).notToInclude( "AKIAIOSFODNN7EXAMPLE" );
+            } );
+
+            it( "marks a detector missing the required contract surface as degraded and skips it", function() {
+                var mw = new bxAiSentinel.models.AiSentinelMiddleware( settings: {
+                    "externalDetectors" : [
+                        "tests.specs.integration.fixtures.FixtureIncompleteDetector"
+                    ]
+                } );
+
+                var report = mw.getLoadReport();
+                expect( report.degraded ).toBeTrue();
+                expect( report.detectors ).toHaveLength( 1 );
+                expect( report.detectors[ 1 ].status ).toBe( "degraded" );
+                expect( report.detectors[ 1 ].reason ).toInclude( "missing required methods" );
+            } );
+
+            it( "marks an unresolvable detector as degraded without crashing", function() {
+                var mw = new bxAiSentinel.models.AiSentinelMiddleware( settings: {
+                    "externalDetectors" : [
+                        "tests.specs.integration.fixtures.DoesNotExistDetector"
+                    ]
+                } );
+
+                var report = mw.getLoadReport();
+                expect( report.degraded ).toBeTrue();
+                expect( report.detectors ).toHaveLength( 1 );
+                expect( report.detectors[ 1 ].name   ).toBe( "tests.specs.integration.fixtures.DoesNotExistDetector" );
+                expect( report.detectors[ 1 ].status ).toBe( "degraded" );
+            } );
+
+            it( "records each external detector result in the order they were declared", function() {
+                var mw = new bxAiSentinel.models.AiSentinelMiddleware( settings: {
+                    "externalDetectors" : [
+                        "tests.specs.integration.fixtures.FixtureExternalDetector",
+                        "tests.specs.integration.fixtures.FixtureIncompatibleDetector",
+                        "tests.specs.integration.fixtures.FixtureExternalDetector"
+                    ]
+                } );
+
+                var report = mw.getLoadReport();
+                expect( report.degraded ).toBeTrue();
+                expect( report.detectors ).toHaveLength( 3 );
+                expect( report.detectors[ 1 ].status ).toBe( "loaded" );
+                expect( report.detectors[ 2 ].status ).toBe( "degraded" );
+                expect( report.detectors[ 3 ].status ).toBe( "loaded" );
+            } );
+
+        } );
+
+    }
+
+    /**
+     * Concatenate user-role message content. Same helper pattern as the
+     * other integration specs; keeps assertions resilient to the token-
+     * protocol system message being prepended to the outbound payload.
+     */
+    private string function _joinUserContent( required array messages ) {
+        var chunks = [];
+        for ( var m in arguments.messages ) {
+            if ( isStruct( m ) && ( m.role ?: "" ) == "user" && isSimpleValue( m.content ?: "" ) ) {
+                chunks.append( m.content );
+            }
+        }
+        return arrayToList( chunks, char( 10 ) );
+    }
+
+}

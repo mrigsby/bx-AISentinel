@@ -6,9 +6,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-04-19
+
+Real-world host-app fix discovered during the first end-user test of v0.3.0 against a fresh demo install.
+
 ### Fixed
 
-- README + `SentinelPolicy.bx` JavaDoc examples for `externalDetectors` corrected. Examples previously showed `"OnnxNerDetector@bx-AISentinel-ONNX"` — the dashed form, which doesn't actually resolve in WireBox (the parser uses `this.cfmapping`, not `this.name`, and dashes break it). Examples now use `"OnnxNerDetector@bxAISentinelONNX"` to match the working form. See `bx-AISentinel-ONNX/CHANGELOG.md` v0.4.1-pre and `DEV-NOTES/discovery-log.md` "Cross-module resolution" for the empirical context. Pure doc fix; no behavior change in the core middleware.
+- **`includes/token-protocol.md` was being stripped from `box install` packages** because the `box.json` `ignore` field had `"*.md"`, which CommandBox interprets recursively (matches all markdown files at any depth). Result: every host installing the module saw `_loadTokenProtocol()` fall through to its hardcoded fallback string instead of the rich rule-set we ship in the file. The v0.3.0 coaching rewrite (use-vs-discuss split for narrative prose) NEVER reached the LLM in any deployed install. Fixed by dropping `"*.md"` from `ignore` — the README, CHANGELOG, and `includes/token-protocol.md` now ship with every install. Adds ~30 KB to the package; no functional cost.
+- README + `SentinelPolicy.bx` JavaDoc examples for `externalDetectors` corrected (carried over from the [Unreleased] entry that was rolled into this release). Examples previously showed `"OnnxNerDetector@bx-AISentinel-ONNX"` — the dashed form, which doesn't actually resolve in WireBox (the parser uses `this.cfmapping`, not `this.name`, and dashes break it). Now use `"OnnxNerDetector@bxAISentinelONNX"`. See `bx-AISentinel-ONNX/CHANGELOG.md` v0.4.1-pre for context.
+
+### Compatibility
+
+Pure file-set fix. Existing v0.3.0 hosts will need to re-`box install` to pull the missing `token-protocol.md` (or the LLM continues to receive the fallback prompt). No code or API changes.
 
 ## [0.3.0] - 2026-04-19
 

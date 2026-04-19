@@ -6,6 +6,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-04-19
+
+### Changed
+
+- **Restoration-notice wording sharpened.** Was *"...tokenized for the LLM and restored locally before display."* — technically inaccurate when the LLM produced a clean prose answer that didn't echo any tokens (nothing was actually restored). New wording splits the two distinct events: *"...tokenized before reaching the LLM. Restored locally if echoed back."* The "tokenized" half is unambiguous (always happens when `tokensMinted > 0`); the "restored if echoed" half honestly describes the conditional restoration step. Surfaced during the v0.3.1 end-user test where the LLM correctly chose NOT to quote tokens in its prose (per the v0.3.0 use-vs-discuss coaching), making the prior "restored" claim awkward.
+- Integration spec assertion updated to match new wording.
+
+### Compatibility
+
+Hosts displaying the restoration footer will see the new wording on the first turn after upgrade. No code, API, or config-shape changes.
+
 ## [0.3.1] - 2026-04-19
 
 Real-world host-app fix discovered during the first end-user test of v0.3.0 against a fresh demo install.

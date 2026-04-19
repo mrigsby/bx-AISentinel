@@ -584,6 +584,13 @@ class {
      * `⟦SECRET:LABEL:hmac8⟧` placeholders, quotes one in a sentence — after
      * restoration the user reads "the password sekret-prod-1 has been redacted"
      * with no signal that the value was protected end-to-end.
+     *
+     * Wording note: the notice splits "tokenized" (always happens, gated by
+     * tokensMinted > 0) from "restored locally if echoed back" (conditional —
+     * only happens when the LLM actually quotes a token in its response). The
+     * earlier "tokenized for the LLM and restored locally before display"
+     * wording was technically inaccurate when the LLM produced a clean prose
+     * answer that didn't echo any tokens (nothing to restore).
      */
     private string function _buildRestorationNotice( required struct runCtx ) {
         if ( !variables.policy.isRestorationNoticeEnabled() ) return "";
@@ -610,7 +617,7 @@ class {
         return char( 10 ) & char( 10 )
             & "---" & char( 10 )
             & "*🛡️ Sentinel: " & minted & " " & noun & labelDisplay
-            & " " & were & " tokenized for the LLM and restored locally before display.*";
+            & " " & were & " tokenized before reaching the LLM. Restored locally if echoed back.*";
     }
 
     /**

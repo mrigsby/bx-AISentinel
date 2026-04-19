@@ -185,7 +185,8 @@ class extends="testbox.system.BaseSpec" {
                 mw.afterLLMCall( ctx );
 
                 expect( ctx.response ).toInclude( "🛡️ Sentinel:" );
-                expect( ctx.response ).toInclude( "tokenized for the LLM and restored locally" );
+                expect( ctx.response ).toInclude( "tokenized before reaching the LLM" );
+                expect( ctx.response ).toInclude( "Restored locally if echoed back" );
                 // The notice cites the label that was minted, not just a count.
                 expect( ctx.response ).toInclude( "AWS_ACCESS_KEY" );
             } );

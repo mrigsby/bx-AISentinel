@@ -6,6 +6,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-04-19
+
+First non-pre release. Graduates the core sentinel out of the 0.x line now that the full pipeline + the optional `bx-AISentinel-ONNX` Tier 1 NER sibling have been verified end-to-end against a fresh-clone install (Stages 1+2+3 of `End-User-Testing-Path.md`). The 0.3.x releases walked the LLM-coaching wording, the restoration-notice introduction, and the token-presence-check tightening; v1.0.0 rolls those into a stable release.
+
+### Added
+
+- Nothing new in v1.0.0 itself — this is a graduation release. All v0.3.x added surface (`appendRestorationNotice` policy + isRestorationNoticeEnabled getter; rewritten coaching prompt with use-vs-discuss split; restoration-notice footer; tightened token-presence check) is now part of the v1 contract.
+
+### Fixed
+
+- (none new in v1.0.0 — see v0.3.x history for the doc + behavior fixes that were carried in)
+
+### Compatibility
+
+No API or behavior changes from v0.3.3. Hosts pinning `bx-aisentinel` to `^0.3.0` or via git URL on `main` are already on the v1.0.0 surface.
+
+### What's NOT in v1.0.0 (deferred — see DOCUMENTATION/07-future-work.md)
+
+- Tier 2 local-LLM arbitration (Ollama)
+- OS keychain / Vault / 1Password integration for registered secrets
+- Streaming-aware token stitching across SSE deltas
+- Native sidecar for stronger memory zeroing
+- MCP server surface for non-BoxLang clients (Claude Code, Cursor)
+- Tier-elevation policy resolver reading `.sentinel.json`
+- Multi-agent shared manifest
+
 ## [0.3.3] - 2026-04-19
 
 ### Fixed

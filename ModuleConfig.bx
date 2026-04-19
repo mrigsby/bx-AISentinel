@@ -9,13 +9,13 @@
  */
 class {
 
-    property name="moduleVersion" default="0.3.3";
+    property name="moduleVersion" default="1.0.0";
 
     this.title          = "BX AI Sentinel";
-    this.author         = "Ortus Solutions, Corp";
-    this.webURL         = "https://www.ortussolutions.com";
+    this.author         = "Michael Rigsby <mrigsby@oistech.com>";
+    this.webURL         = "https://www.oistech.com";
     this.description    = "AI middleware for secret / credential / PII redaction with reversible tokenization.";
-    this.version        = "0.3.3";
+    this.version        = "1.0.0";
     this.cfmapping      = "bxAiSentinel";
     this.modelNamespace = "bxaisentinel";
     this.autoMapModels  = true;

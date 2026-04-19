@@ -1,10 +1,10 @@
 {
     "name"        : "BX AI Sentinel Middleware",
     "slug"        : "bx-aisentinel",
-    "version"     : "0.3.3",
-    "author"      : "Ortus Solutions, Corp",
+    "version"     : "1.0.0",
+    "author"      : "Michael Rigsby <mrigsby@oistech.com>",
     "location"    : "forgeboxStorage",
-    "homepage"    : "https://www.ortussolutions.com",
+    "homepage"    : "https://www.oistech.com",
     "description" : "BoxLang AI middleware that tokenizes secrets, credentials, and PII in outbound LLM prompts and restores them on the inbound response. Drop-in, provider-agnostic, per-call timing metrics.",
     "type"        : "modules",
     "directory"   : "modules_app",

@@ -531,29 +531,86 @@ class {
      *   - a getContent()-style object
      * Do the best we can to find text fields and restore them, leaving unknown
      * fields untouched.
+     *
+     * After restoration, optionally appends a brief notice to the user-visible
+     * content explaining that the response was post-processed locally — see
+     * `_buildRestorationNotice()`. Toggled by the `appendRestorationNotice`
+     * policy setting (default true).
      */
     private any function _restoreResponseShape( required any response, required struct runCtx ) {
+        var notice = _buildRestorationNotice( arguments.runCtx );
+
         if ( isSimpleValue( arguments.response ) ) {
-            return variables.core.restore( arguments.response, arguments.runCtx );
+            var restored = variables.core.restore( arguments.response, arguments.runCtx );
+            return restored & notice;
         }
 
         if ( isStruct( arguments.response ) ) {
             if ( structKeyExists( arguments.response, "content" ) && isSimpleValue( arguments.response.content ) ) {
-                arguments.response.content = variables.core.restore( arguments.response.content, arguments.runCtx );
+                arguments.response.content = variables.core.restore( arguments.response.content, arguments.runCtx ) & notice;
             }
 
             if ( structKeyExists( arguments.response, "choices" ) && isArray( arguments.response.choices ) ) {
+                // Only append the notice to the FIRST choice — alternative
+                // completions are typically not user-visible, and duplicating
+                // the notice would be noisy.
+                var noticed = false;
                 for ( var choice in arguments.response.choices ) {
                     if ( isStruct( choice ) && structKeyExists( choice, "message" )
                          && isStruct( choice.message ) && structKeyExists( choice.message, "content" )
                          && isSimpleValue( choice.message.content ) ) {
-                        choice.message.content = variables.core.restore( choice.message.content, arguments.runCtx );
+                        var restored = variables.core.restore( choice.message.content, arguments.runCtx );
+                        choice.message.content = noticed ? restored : ( restored & notice );
+                        noticed = true;
                     }
                 }
             }
         }
 
         return arguments.response;
+    }
+
+    /**
+     * Build the optional "Sentinel restored values" notice appended to assistant
+     * responses. Returns "" when:
+     *   - the policy disabled it (`appendRestorationNotice: false`), OR
+     *   - no tokens were minted for this run (no protection happened)
+     *
+     * Otherwise returns a markdown block ready to concatenate after restored
+     * content. Markdown so it renders cleanly in any UI that uses the standard
+     * `markdown()` BIF (the demo, ColdBox views, plain renderers).
+     *
+     * The notice avoids the gaslighting case where the LLM, taught to preserve
+     * `⟦SECRET:LABEL:hmac8⟧` placeholders, quotes one in a sentence — after
+     * restoration the user reads "the password sekret-prod-1 has been redacted"
+     * with no signal that the value was protected end-to-end.
+     */
+    private string function _buildRestorationNotice( required struct runCtx ) {
+        if ( !variables.policy.isRestorationNoticeEnabled() ) return "";
+
+        var minted = arguments.runCtx.metrics.tokensMinted ?: 0;
+        if ( minted <= 0 ) return "";
+
+        var labels = arguments.runCtx.metrics.labels ?: {};
+        var labelKeys = structKeyArray( labels ).sort( "text" );
+
+        var labelDisplay = "";
+        if ( arrayLen( labelKeys ) ) {
+            var parts = [];
+            for ( var k in labelKeys ) {
+                var c = labels[ k ];
+                parts.append( c > 1 ? ( k & " ×" & c ) : k );
+            }
+            labelDisplay = " (" & parts.toList( ", " ) & ")";
+        }
+
+        var noun = minted == 1 ? "value" : "values";
+        var were = minted == 1 ? "was"   : "were";
+
+        return char( 10 ) & char( 10 )
+            & "---" & char( 10 )
+            & "*🛡️ Sentinel: " & minted & " " & noun & labelDisplay
+            & " " & were & " tokenized for the LLM and restored locally before display.*";
     }
 
     /**

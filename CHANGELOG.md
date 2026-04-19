@@ -6,6 +6,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-04-19
+
+Closes a UX gap where the LLM, taught to preserve `⟦SECRET:LABEL:hmac8⟧` placeholders verbatim, would quote them in narrative prose ("the placeholder ⟦SECRET:DATASOURCE_PASSWORD:abc⟧ has been redacted"). After local restoration the user reads "the placeholder sekret-prod-1 has been redacted" — confusing and undermines the protection story. Two coordinated changes address this.
+
+### Added
+
+- **`appendRestorationNotice` policy setting** (default `true`). When enabled and any tokens were minted on the turn, the middleware appends a brief markdown notice to the user-visible content explaining that values were tokenized for the LLM and restored locally before display. Renders cleanly in any UI that uses the standard `markdown()` BIF. Hosts that prefer clean output (no chrome) set the setting to `false`. Mirrored as a typed getter `SentinelPolicy.isRestorationNoticeEnabled()`.
+- New integration specs in `AiSentinelMiddlewareSpec.bx` covering: notice appended when tokens minted (default), notice NOT appended when no tokens minted, notice suppressed when `appendRestorationNotice: false`.
+
+### Changed
+
+- **Token-protocol coaching prompt rewritten** ([`includes/token-protocol.md`](includes/token-protocol.md)) to distinguish two contexts the LLM must handle differently:
+  - **Generated code / commands / config** — emit the placeholder verbatim so it gets restored to the real value (existing behavior).
+  - **Narrative discussion of the redacted value** — refer to it BY ITS TYPE (e.g. "the datasource password field"), never quote or echo the placeholder text. Quoting in prose creates the gaslighting case described above.
+  Adds a "quick test" the LLM can run on its own sentences before sending: "if my placeholder is replaced with the actual secret right here, does this sentence still make sense?"
+- `_restoreResponseShape()` now returns the restored content with the optional notice concatenated (or with no change when the notice is disabled / no tokens were minted). Behavior change visible to hosts that read assistant `content` strings — `toInclude(...)` assertions remain valid; `toBe(exactString)` assertions on responses with minted tokens will need updating.
+
+### Compatibility
+
+The notice is opt-out via a single setting. Set `appendRestorationNotice: false` in `boxlang.json → modules.bx-aisentinel.settings` to restore exact v0.2.x output. The HMAC token format, restoration semantics, metrics shape, and detector contract are all unchanged.
+
 ## [0.2.1] - 2026-04-18
 
 ### Fixed

@@ -79,7 +79,14 @@ class {
             "explainTokensToLLM"    : true,
             "tokenProtocolPath"     : "",
             "externalDetectors"     : [],
-            "externalDetectorOptions" : {}
+            "externalDetectorOptions" : {},
+            // When true, append a brief markdown notice to assistant responses
+            // explaining that values were tokenized for the LLM and restored
+            // locally. Helps users understand why a response might mention a
+            // restored value as if it were "redacted" — without the notice,
+            // the round-trip is invisible. Hosts that want clean output (no
+            // chrome) set this to false.
+            "appendRestorationNotice" : true
         };
     }
 
@@ -110,6 +117,11 @@ class {
     boolean function isEntropyDetectorEnabled()  { return variables.settings.enableEntropyDetector; }
     boolean function isTokenCoachingEnabled()    { return variables.settings.explainTokensToLLM; }
     string  function getTokenProtocolPath()      { return variables.settings.tokenProtocolPath; }
+    boolean function isRestorationNoticeEnabled() {
+        return structKeyExists( variables.settings, "appendRestorationNotice" )
+            ? variables.settings.appendRestorationNotice
+            : true;
+    }
 
     boolean function isCategoryEnabled( required string category ) {
         return arrayContains( variables.settings.categoriesEnabled, arguments.category );

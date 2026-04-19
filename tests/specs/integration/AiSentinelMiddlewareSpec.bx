@@ -172,6 +172,65 @@ class extends="testbox.system.BaseSpec" {
                 expect( ctx.response.choices[ 1 ].message.content ).toInclude( "alice@example.com" );
             } );
 
+            it( "appends a restoration notice to user-visible content when tokens were minted (default)", function() {
+                var mw  = new bxAiSentinel.models.AiSentinelMiddleware();
+                var ctx = {
+                    "metadata" : {},
+                    "messages" : [ { "role": "user", "content": "AWS key: AKIAIOSFODNN7EXAMPLE" } ]
+                };
+
+                mw.beforeAgentRun( ctx );
+                mw.beforeLLMCall( ctx );
+                ctx.response = "Rotate your key with: aws iam delete-access-key";
+                mw.afterLLMCall( ctx );
+
+                expect( ctx.response ).toInclude( "🛡️ Sentinel:" );
+                expect( ctx.response ).toInclude( "tokenized for the LLM and restored locally" );
+                // The notice cites the label that was minted, not just a count.
+                expect( ctx.response ).toInclude( "AWS_ACCESS_KEY" );
+            } );
+
+            it( "does NOT append a restoration notice when no tokens were minted", function() {
+                var mw  = new bxAiSentinel.models.AiSentinelMiddleware();
+                var ctx = {
+                    "metadata" : {},
+                    "messages" : [ { "role": "user", "content": "What is BoxLang?" } ]   // no PII
+                };
+
+                mw.beforeAgentRun( ctx );
+                mw.beforeLLMCall( ctx );
+                ctx.response = "BoxLang is a modern dynamic JVM language.";
+                mw.afterLLMCall( ctx );
+
+                expect( ctx.response ).notToInclude( "🛡️" );
+                expect( ctx.response ).notToInclude( "Sentinel:" );
+            } );
+
+            it( "honors `appendRestorationNotice: false` when the policy disables the notice", function() {
+                var mw  = new bxAiSentinel.models.AiSentinelMiddleware( settings: {
+                    "appendRestorationNotice": false
+                } );
+                var ctx = {
+                    "metadata" : {},
+                    "messages" : [ { "role": "user", "content": "AWS key: AKIAIOSFODNN7EXAMPLE" } ]
+                };
+
+                mw.beforeAgentRun( ctx );
+                mw.beforeLLMCall( ctx );
+
+                // Embed the minted token in the response so restoration has
+                // something to do — without this the test only validates that
+                // *no notice* was appended, not that restoration still ran.
+                var echoedToken = _extractUserToken( ctx.messages );
+                ctx.response = "Rotate your key with: aws iam delete-access-key --access-key-id " & echoedToken;
+
+                mw.afterLLMCall( ctx );
+
+                expect( ctx.response ).toInclude( "AKIAIOSFODNN7EXAMPLE" );    // still restored
+                expect( ctx.response ).notToInclude( "🛡️" );                  // but no notice
+                expect( ctx.response ).notToInclude( "Sentinel:" );
+            } );
+
             it( "afterAgentRun emits metrics on getLastRunMetrics() and tears down the manifest", function() {
                 var mw  = new bxAiSentinel.models.AiSentinelMiddleware();
                 var ctx = {

@@ -9,13 +9,13 @@
  */
 class {
 
-    property name="moduleVersion" default="0.2.1";
+    property name="moduleVersion" default="0.3.0";
 
     this.title          = "BX AI Sentinel";
     this.author         = "Ortus Solutions, Corp";
     this.webURL         = "https://www.ortussolutions.com";
     this.description    = "AI middleware for secret / credential / PII redaction with reversible tokenization.";
-    this.version        = "0.2.1";
+    this.version        = "0.3.0";
     this.cfmapping      = "bxAiSentinel";
     this.modelNamespace = "bxaisentinel";
     this.autoMapModels  = true;
@@ -69,7 +69,13 @@ class {
             // and README "External detectors". Appended across config layers.
             "externalDetectors"      : [],
             // Per-detector init() overrides, keyed by the detector's resolution ID.
-            "externalDetectorOptions": {}
+            "externalDetectorOptions": {},
+            // When true (default), append a brief markdown notice to assistant
+            // responses explaining that values were tokenized for the LLM and
+            // restored locally. Avoids the "the password sekret-prod-1 has been
+            // redacted" gaslighting when the LLM quotes a token in its prose.
+            // Set false if your host renders its own UI chrome around responses.
+            "appendRestorationNotice": true
         };
     }
 

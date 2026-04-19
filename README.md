@@ -227,12 +227,12 @@ An external detector is any class that implements the [`IDetector@1.0.0` contrac
 ```javascript
 var sentinel = new AiSentinelMiddleware( settings: {
     "externalDetectors" : [
-        "OnnxNerDetector@bx-AISentinel-ONNX"            // ColdBox-convention WireBox ID
+        "OnnxNerDetector@bxAISentinelONNX"            // ColdBox-convention WireBox ID
         // or:
         // "my.app.detectors.CustomDetector"            // fully-qualified class path
     ],
     "externalDetectorOptions" : {
-        "OnnxNerDetector@bx-AISentinel-ONNX" : {
+        "OnnxNerDetector@bxAISentinelONNX" : {
             "modelPath" : "~/.bx-aisentinel/models/gliner-pii-v1/",
             "assetMode" : "manual"
         }
@@ -250,7 +250,7 @@ var report = sentinel.getLoadReport();
 //       compatibleContractVersion : "1.0.0",
 //       degraded                  : false,
 //       detectors                 : [
-//           { name: "OnnxNerDetector@bx-AISentinel-ONNX", status: "loaded" }
+//           { name: "OnnxNerDetector@bxAISentinelONNX", status: "loaded" }
 //       ]
 //   }
 ```

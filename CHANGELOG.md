@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Fixed
+
+- README + `SentinelPolicy.bx` JavaDoc examples for `externalDetectors` corrected. Examples previously showed `"OnnxNerDetector@bx-AISentinel-ONNX"` — the dashed form, which doesn't actually resolve in WireBox (the parser uses `this.cfmapping`, not `this.name`, and dashes break it). Examples now use `"OnnxNerDetector@bxAISentinelONNX"` to match the working form. See `bx-AISentinel-ONNX/CHANGELOG.md` v0.4.1-pre and `DEV-NOTES/discovery-log.md` "Cross-module resolution" for the empirical context. Pure doc fix; no behavior change in the core middleware.
+
 ## [0.3.0] - 2026-04-19
 
 Closes a UX gap where the LLM, taught to preserve `⟦SECRET:LABEL:hmac8⟧` placeholders verbatim, would quote them in narrative prose ("the placeholder ⟦SECRET:DATASOURCE_PASSWORD:abc⟧ has been redacted"). After local restoration the user reads "the placeholder sekret-prod-1 has been redacted" — confusing and undermines the protection story. Two coordinated changes address this.

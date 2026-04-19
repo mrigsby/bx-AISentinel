@@ -144,8 +144,9 @@ class {
      * detection pipeline. Appended across config layers so host apps can
      * add to a base shared config.
      *
-     * Format: `DetectorName@ModuleName` (ColdBox convention), e.g.
-     * `"OnnxNerDetector@bx-AISentinel-ONNX"`.
+     * Format: `DetectorName@<cfmapping>` (ColdBox convention — NOTE: WireBox
+     * uses the module's `this.cfmapping`, NOT `this.name`, as the suffix).
+     * Example: `"OnnxNerDetector@bxAISentinelONNX"`.
      */
     array function getExternalDetectors() {
         return variables.settings.externalDetectors;

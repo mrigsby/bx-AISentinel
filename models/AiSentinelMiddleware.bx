@@ -314,12 +314,23 @@ class {
      * non-sensitive chat doesn't eat context window.
      */
     private boolean function _messagesContainTokens( required array messages ) {
-        var marker = char( 10214 ) & "SECRET:";
+        // Match the FULL canonical token shape ⟦SECRET:LABEL:hmac8⟧, not just
+        // the bracket-and-prefix substring. The looser substring marker
+        // incorrectly fired on agent / demo system prompts containing example
+        // tokens like "⟦SECRET:AWS_ACCESS_KEY:…⟧" (ellipsis, not real hex) —
+        // result was coaching ALWAYS firing regardless of whether the host
+        // had actually minted any tokens, defeating the "skip overhead on
+        // plain chat" optimization.
+        //
+        // Pattern mirrors Tokenizer.bx's TOKEN_REGEX exactly: 8 hex chars
+        // for the HMAC suffix is what distinguishes a minted token from a
+        // documentation placeholder.
+        var pattern = char( 10214 ) & "SECRET:[A-Z0-9_]+:[a-f0-9]{8}" & char( 10215 );
         for ( var msg in arguments.messages ) {
             if ( isStruct( msg )
                  && structKeyExists( msg, "content" )
                  && isSimpleValue( msg.content )
-                 && find( marker, msg.content ) > 0 ) {
+                 && reFind( pattern, msg.content ) > 0 ) {
                 return true;
             }
         }

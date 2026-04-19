@@ -6,6 +6,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-04-19
+
+### Fixed
+
+- **Token-protocol coaching was firing on every turn**, defeating the "skip ~80-token coaching overhead on plain non-sensitive chat" optimization. Discovered during the v0.3.2 end-user test: a plain "Good afternoon, how are you?" prompt with no PII was still injecting the full coaching protocol. Root cause: `_messagesContainTokens()` used a loose substring marker (`⟦SECRET:`) which matched any text containing that prefix — including agent / demo system prompts that document the token format with example placeholders like `⟦SECRET:AWS_ACCESS_KEY:…⟧` (ellipsis, not real hex). Tightened to require the **full canonical token shape** `⟦SECRET:LABEL:hmac8⟧` with 8 hex chars (matching `Tokenizer.bx`'s TOKEN_REGEX exactly). Documentation placeholders no longer trigger coaching; real minted tokens still do.
+- Two new integration specs lock in the new behavior:
+  - "does NOT inject coaching when only an example/placeholder token is in the system message" (the bug we just fixed)
+  - "DOES inject coaching when a real-shape token is present" (regression guard so tightening didn't accidentally suppress real cases)
+
+### Compatibility
+
+Pure logic fix. Hosts that were silently paying the coaching overhead on every turn now save ~80 tokens per non-PII prompt. Hosts with real PII still get the full coaching. No API changes.
+
 ## [0.3.2] - 2026-04-19
 
 ### Changed

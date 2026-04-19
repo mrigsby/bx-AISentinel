@@ -232,6 +232,54 @@ class extends="testbox.system.BaseSpec" {
                 expect( ctx.response ).notToInclude( "Sentinel:" );
             } );
 
+            it( "does NOT inject token-protocol coaching when only an example/placeholder token (not real-shape) is in the system message", function() {
+                // Catches the demo bug: a system prompt containing a literal
+                // example like "⟦SECRET:AWS_ACCESS_KEY:…⟧" (ellipsis, not 8
+                // hex chars) was loose-matching the marker and triggering
+                // coaching on every turn. The fix: require the FULL canonical
+                // token shape (8-hex-char hmac), matching Tokenizer's regex.
+                var mw  = new bxAiSentinel.models.AiSentinelMiddleware();
+                var ctx = {
+                    "metadata" : {},
+                    "messages" : [
+                        { "role": "system", "content": "When you see a placeholder like " & char( 10214 ) & "SECRET:AWS_ACCESS_KEY:…" & char( 10215 ) & " treat it as redacted." },
+                        { "role": "user",   "content": "Good afternoon, how are you?" }
+                    ]
+                };
+
+                mw.beforeAgentRun( ctx );
+                mw.beforeLLMCall( ctx );
+
+                // No real tokens were minted (no PII in the user message), and
+                // the example in the system message is NOT a real token shape.
+                // Coaching MUST NOT be appended to the system message.
+                expect( ctx.messages[ 1 ].content ).notToInclude( "## bx-AISentinel token protocol" );
+                expect( ctx.messages[ 1 ].content ).notToInclude( "Sentinel Token Protocol" );
+            } );
+
+            it( "DOES inject coaching when a real-shape token is present in the messages (e.g. carried in via memory)", function() {
+                // Counterpart to the above — make sure tightening the marker
+                // didn't accidentally suppress coaching on real tokens. A
+                // valid token shape (8 hex chars) MUST trigger coaching even
+                // when this turn's user message has no PII.
+                var mw  = new bxAiSentinel.models.AiSentinelMiddleware();
+                var realToken = char( 10214 ) & "SECRET:AWS_ACCESS_KEY:a1b2c3d4" & char( 10215 );
+                var ctx = {
+                    "metadata" : {},
+                    "messages" : [
+                        { "role": "system", "content": "You are a helpful assistant." },
+                        { "role": "user",   "content": "Earlier you saw " & realToken & " — what command rotates it?" }
+                    ]
+                };
+
+                mw.beforeAgentRun( ctx );
+                mw.beforeLLMCall( ctx );
+
+                // Coaching should be injected (appended to system msg or prepended)
+                var systemContent = ctx.messages[ 1 ].content;
+                expect( systemContent ).toInclude( "Sentinel Token Protocol" );
+            } );
+
             it( "afterAgentRun emits metrics on getLastRunMetrics() and tears down the manifest", function() {
                 var mw  = new bxAiSentinel.models.AiSentinelMiddleware();
                 var ctx = {
